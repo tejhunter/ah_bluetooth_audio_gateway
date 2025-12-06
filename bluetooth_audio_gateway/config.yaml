@@ -1,0 +1,29 @@
+name: "Bluetooth Audio Gateway"
+version: "0.1.0"
+slug: "bluetooth_audio_gateway"
+description: "Passe-relais audio Bluetooth pour connecter des enceintes et micros à Home Assistant."
+arch:
+  - aarch64    # Pour Raspberry Pi 5, c'est crucial
+    - armv7
+      - amd64
+      init: false
+      ports:
+        3000/tcp: 3000
+        ports_description:
+          3000/tcp: "Interface web de gestion"
+          map:
+            - config:rw
+              - ssl:ro
+              host_network: true      # PERMISSION ESSENTIELLE pour le Bluetooth
+              host_dbus: true         # Pour communiquer avec le service BlueZ
+              host_ipc: true          # Pour la communication inter-processus audio
+              privileged:
+                - SYS_ADMIN
+                  - SYS_RAWIO
+                    - NET_ADMIN
+                    apparmor: false
+                    boot: "auto"
+                    options:
+                      device_address: ""    # L'utilisateur pourra configurer l'adresse MAC ici
+                      schema:
+                        device_address: "str"

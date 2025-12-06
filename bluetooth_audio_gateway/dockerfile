@@ -1,0 +1,40 @@
+ARG BUILD_FROM
+FROM $BUILD_FROM
+
+# Définit les métadonnées (optionnel)
+LABEL \
+    io.hass.name="Bluetooth Audio Gateway" \
+        io.hass.description="Bluetooth audio bridge for Home Assistant" \
+            io.hass.type="addon"
+
+            # Installation des dépendances CRITIQUES
+            RUN apk add --no-cache \
+                bluez \
+                    bluez-deprecated \
+                        bluez-libs \
+                            bluez-alsa-utils \
+                                dbus \
+                                    python3 \
+                                        py3-pip \
+                                            alsa-utils \
+                                                pulseaudio \
+                                                    pulseaudio-bluez \
+                                                        curl \
+                                                            bash
+
+                                                            # Installation des dépendances Python pour l'API web
+                                                            RUN pip3 install --no-cache-dir flask flask-cors
+
+                                                            # Copie les fichiers de l'add-on
+                                                            COPY run.sh /
+                                                            COPY api /api/
+                                                            COPY www /www/
+
+                                                            # Rend le script exécutable
+                                                            RUN chmod a+x /run.sh
+
+                                                            # Le port exposé (doit correspondre à config.yaml)
+                                                            EXPOSE 3000
+
+                                                            # Commande de démarrage
+                                                            CMD [ "/run.sh" ]
