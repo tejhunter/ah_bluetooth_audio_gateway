@@ -22,8 +22,10 @@ RUN apk add --no-cache \
     curl \
     bash
 
-# Installation des dépendances Python pour l'API web
-RUN pip3 install --no-cache-dir flask flask-cors
+# Installation des dépendances Python pour l'API web VIA APK (et non pip)
+RUN apk add --no-cache \
+    py3-flask \
+    py3-flask-cors
 
 # Copie les fichiers de l'add-on
 COPY run.sh /
