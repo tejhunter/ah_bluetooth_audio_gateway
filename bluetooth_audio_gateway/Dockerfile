@@ -22,7 +22,7 @@ RUN apk update && apk add --no-cache \
     pipewire-pulse \
     pipewire-alsa \
     wireplumber \
-    pipewire-spa-bluez \  # PAQUET CORRIGÉ ICI
+    pipewire-spa-bluez \
     ffmpeg \
     curl \
     bash \
