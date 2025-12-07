@@ -134,7 +134,24 @@ def audio_tools():
             ok, out = _run_cmd(['pactl', 'list', 'sinks', 'short'])
             sinks = out[:1000]
 
-        return jsonify({'success': True, 'tools': found, 'sinks': sinks})
+        # Vérifier si BlueALSA daemon est en cours d'exécution
+        bluealsa_running = False
+        bluealsa_info = "Not running"
+        if found.get('bluealsa'):
+            # Chercher le processus bluealsa
+            ps_ok, ps_out = _run_cmd(['pgrep', '-f', 'bluealsa'], timeout=5)
+            if ps_ok:
+                bluealsa_running = True
+                bluealsa_info = "Running"
+            else:
+                bluealsa_info = "Not found in process list"
+
+        return jsonify({
+            'success': True, 
+            'tools': found, 
+            'sinks': sinks,
+            'bluealsa_daemon': {'running': bluealsa_running, 'info': bluealsa_info}
+        })
     except Exception as e:
         app.logger.error(f"Erreur audio_tools: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -380,17 +397,21 @@ def play_test_sound():
         if _which('bluealsa-aplay') and address:
             try:
                 with open(tmp_path, 'rb') as wav_file:
-                    result = subprocess.run(['bluealsa-aplay', address], 
+                    result = subprocess.run(['bluealsa-aplay', '-v', address], 
                                           stdin=wav_file,
-                                          capture_output=True, text=True, timeout=10)
+                                          capture_output=True, text=True, timeout=5)
                 ok = result.returncode == 0
                 out = (result.stdout + '\n' + result.stderr).strip()
                 app.logger.info(f"bluealsa-aplay with stdin: ok={ok} output={out[:500]}")
                 if ok:
                     os.unlink(tmp_path)
                     return jsonify({'success': True, 'method': 'bluealsa-aplay (stdin)', 'details': out})
+                else:
+                    app.logger.warning(f"bluealsa-aplay failed: {out[:200]}")
+            except subprocess.TimeoutExpired:
+                app.logger.warning(f"bluealsa-aplay timed out (daemon may not be running or device unreachable)")
             except Exception as e:
-                app.logger.warning(f"bluealsa-aplay stdin attempt failed: {e}")
+                app.logger.warning(f"bluealsa-aplay exception: {e}")
 
         # 2) Tentative directe aplay sur sortie par défaut (peut échouer sans carte audio)
         if _which('aplay'):

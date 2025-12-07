@@ -39,15 +39,41 @@ fi
 
 # Démarrer BlueALSA daemon (nécessaire pour la lecture audio Bluetooth)
 bashio::log.info "Démarrage du daemon BlueALSA..."
-if command -v bluealsa &> /dev/null; then
-    # Lancer bluealsa en arrière-plan
-    bluealsa -D -i hci0 &
-    BLUEALSA_PID=$!
-    bashio::log.info "BlueALSA daemon démarré (PID: $BLUEALSA_PID)"
-    sleep 2
+
+# Arrêter tout processus bluealsa existant pour un démarrage propre
+pkill -9 bluealsa 2>/dev/null || true
+sleep 2
+
+# Démarrer bluealsa avec les paramètres optimisés pour Home Assistant OS
+# L'option -p a2dp-sink permet le profil audio A2DP (haute qualité)
+bluealsa -p a2dp-sink -i hci0 &
+BLUEALSA_PID=$!
+sleep 3
+
+# Vérification robuste du démarrage
+if ps -p $BLUEALSA_PID > /dev/null 2>&1; then
+    bashio::log.info "✅ BlueALSA daemon actif (PID: $BLUEALSA_PID)"
+    
+    # Vérifier que le socket BlueALSA est créé
+    if [ -S "/var/run/bluealsa/hci0" ] || [ -S "/tmp/bluealsa.socket" ]; then
+        bashio::log.info "✅ Socket BlueALSA détecté"
+    else
+        bashio::log.warning "⚠️  Socket BlueALSA non trouvé. Essai avec spécification manuelle..."
+        # Redémarrer avec socket explicite
+        pkill -9 bluealsa 2>/dev/null || true
+        bluealsa -p a2dp-sink -i hci0 -S /tmp/bluealsa.socket &
+        sleep 3
+    fi
 else
-    bashio::log.warning "BlueALSA non trouvé. La lecture audio Bluetooth peut ne pas fonctionner."
+    bashio::log.error "❌ BlueALSA daemon n'a pas pu démarrer"
+    bashio::log.warning "Tentative avec debug activé..."
+    bluealsa -p a2dp-sink -i hci0 -v &
+    sleep 5
 fi
+
+# Vérifier les processus audio
+bashio::log.info "Processus audio en cours d'exécution :"
+ps aux | grep -E "(bluealsa|bluez|pulse)" | grep -v grep || true
 
 # Démarrer le serveur API Python
 bashio::log.info "Démarrage du serveur API Flask..."
