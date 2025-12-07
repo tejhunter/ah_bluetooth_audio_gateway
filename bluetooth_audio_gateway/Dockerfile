@@ -8,7 +8,7 @@ LABEL \
     io.hass.type="addon"
 
 # Installation des dépendances CRITIQUES
-RUN apk add --no-cache \
+RUN apk update && apk add --no-cache \
     bluez \
     bluez-deprecated \
     bluez-libs \
@@ -22,7 +22,7 @@ RUN apk add --no-cache \
     pipewire-pulse \
     pipewire-alsa \
     wireplumber \
-    libspa-0.2-bluetooth \
+    libspa-0.2-bluez \
     ffmpeg \
     curl \
     bash \
@@ -30,7 +30,7 @@ RUN apk add --no-cache \
     gcc \
     musl-dev \
     python3-dev \
-    linux-headers     
+    linux-headers 
 
 # Installation des dépendances Python pour l'API web VIA APK (et non pip)
 RUN apk add --no-cache \
