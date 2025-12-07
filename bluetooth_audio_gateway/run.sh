@@ -4,11 +4,23 @@ set -e
 bashio::log.info "Initialisation du Bluetooth Audio Gateway..."
 sleep 2
 
-# === 1. CONFIGURATION D-BUS ===
-bashio::log.info "Démarrage du bus D-Bus système..."
-mkdir -p /var/run/dbus
-dbus-daemon --system --fork
-export DBUS_SYSTEM_BUS_ADDRESS="unix:path=/var/run/dbus/system_bus_socket"
+# === 1. UTILISATION DU DBUS SYSTÈME DÉJÀ PRÉSENT ===
+# Le bus système D-Bus est fourni par le système hôte (Home Assistant OS)
+export DBUS_SYSTEM_BUS_ADDRESS="unix:path=/run/dbus/system_bus_socket"
+bashio::log.info "Utilisation du bus D-Bus système existant..."
+
+# Vérification que le socket est accessible
+if [ ! -S "$DBUS_SYSTEM_BUS_ADDRESS" ]; then
+    bashio::log.warning "⚠️  Le socket D-Bus système n'est pas trouvé. Vérification des alternatives..."
+    # Recherche d'autres sockets potentiels
+    if [ -S "/var/run/dbus/system_bus_socket" ]; then
+        export DBUS_SYSTEM_BUS_ADDRESS="unix:path=/var/run/dbus/system_bus_socket"
+        bashio::log.info "Socket D-Bus trouvé sur /var/run/dbus/system_bus_socket"
+    else
+        bashio::log.error "❌ Aucun socket D-Bus système trouvé. L'add-on ne peut pas fonctionner."
+        exit 1
+    fi
+fi
 
 # === 2. DÉMARRAGE SERVICE BLUETOOTH ===
 bashio::log.info "Démarrage du service Bluetooth..."
