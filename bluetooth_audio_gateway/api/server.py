@@ -23,67 +23,117 @@ def get_status():
     """Endpoint de test pour vérifier que le serveur fonctionne."""
     return jsonify({'status': 'ok', 'service': 'Bluetooth Audio Gateway'})
 
+def get_device_details(mac_address):
+    """Récupère les informations détaillées d'un appareil Bluetooth via bluetoothctl."""
+    try:
+        cmd = f"echo 'info {mac_address}' | bluetoothctl"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
+        output = result.stdout
+
+        details = {
+            'address': mac_address,
+            'connected': 'Connected: yes' in output,
+            'paired': 'Paired: yes' in output,
+            'trusted': 'Trusted: yes' in output,
+            'name': 'Name not found',
+            'device_class': '0x000000',
+            'icon': 'mdi:bluetooth'  # icône par défaut
+        }
+
+        # Extraire le nom
+        for line in output.split('\n'):
+            if line.strip().startswith('Name:'):
+                details['name'] = line.split('Name:')[1].strip()
+            elif line.strip().startswith('Class:'):
+                details['device_class'] = line.split('Class:')[1].strip()
+                # Déduire une icône/type simple à partir de la classe
+                class_hex = details['device_class'].lower()
+                if '0x2404' in class_hex:  # Audio/video (haut-parleur)
+                    details['icon'] = 'mdi:speaker'
+                elif '0x5a020c' in class_hex:  # Smartphone
+                    details['icon'] = 'mdi:cellphone'
+                elif '0x2508' in class_hex:  # Wearable
+                    details['icon'] = 'mdi:watch'
+                break
+
+        return details
+    except Exception as e:
+        app.logger.error(f"Erreur get_device_details pour {mac_address}: {e}")
+        return None
+    
 @app.route('/api/devices', methods=['GET'])
 def get_devices():
-    """Scanner et lister les appareils Bluetooth à proximité"""
+    """Scanner et lister les appareils Bluetooth avec leur état."""
     try:
-        # Lancer un scan rapide
-        subprocess.run(['bluetoothctl', '--timeout=5', 'scan', 'on'], capture_output=True, timeout=10)
-        # Récupérer la liste des appareils découverts
-        result = subprocess.run(['bluetoothctl', 'devices'], capture_output=True, text=True)
+        # 1. Lancer un scan rapide
+        subprocess.run(['bluetoothctl', '--timeout=3', 'scan', 'on'], capture_output=True, timeout=5)
+        time.sleep(1)  # Attendre la découverte
+
+        # 2. Obtenir la liste brute des appareils connus
+        list_result = subprocess.run(['bluetoothctl', 'devices'], capture_output=True, text=True)
         devices = []
-        for line in result.stdout.split('\n'):
+        for line in list_result.stdout.split('\n'):
             if line.strip():
                 parts = line.split(' ', 2)
                 if len(parts) >= 3:
-                    devices.append({'address': parts[1], 'name': parts[2]})
+                    mac_address = parts[1]
+                    # 3. Pour CHAQUE appareil, récupérer les infos détaillées
+                    details = get_device_details(mac_address)
+                    if details:
+                        devices.append(details)
+
+        # 4. Trier : les appareils connectés en premier
+        devices.sort(key=lambda x: x['connected'], reverse=True)
+
         return jsonify({'success': True, 'devices': devices})
+
     except Exception as e:
+        app.logger.error(f"Erreur lors du scan: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/connect', methods=['POST'])
 def connect_device():
-    """Connecter à un appareil Bluetooth (version robuste)"""
-    import subprocess
-    import time
-
+    """Connecter à un appareil Bluetooth (version finale robuste)"""
     try:
         data = request.get_json()
         address = data.get('address')
+        app.logger.info(f"Tentative de connexion à l'appareil: {address}")
 
         if not address:
             return jsonify({'success': False, 'error': 'Adresse MAC requise'}), 400
 
-        # 1. Arrêter toute connexion existante (nettoyage)
-        subprocess.run(['bluetoothctl', 'disconnect', address], capture_output=True, text=True)
-        time.sleep(1)
+        # 1. Tenter la connexion (sans se soucier du message de sortie)
+        connect_cmd = f"echo -e 'connect {address}\\n' | timeout 10 bluetoothctl"
+        result = subprocess.run(connect_cmd, shell=True, capture_output=True, text=True)
+        app.logger.info(f"Sortie de bluetoothctl: {result.stdout[:200]}...")  # Log partiel
 
-        # 2. Vérifier/établir l'appairage (pair) et la confiance (trust)
-        # Cela est nécessaire avant la connexion sur de nombreux systèmes
-        trust_cmd = f"echo -e 'pair {address}\\ntrust {address}\\n' | bluetoothctl"
-        trust_result = subprocess.run(trust_cmd, shell=True, capture_output=True, text=True, timeout=15)
-        time.sleep(2)
+        # Attendre un instant que la connexion s'établisse
+        time.sleep(3)
 
-        # 3. Tenter la connexion
-        connect_cmd = f"echo -e 'connect {address}\\n' | bluetoothctl"
-        connect_result = subprocess.run(connect_cmd, shell=True, capture_output=True, text=True, timeout=30)
+        # 2. VÉRIFICATION CRITIQUE : Obtenir l'état actuel de l'appareil
+        info_cmd = f"echo 'info {address}' | bluetoothctl"
+        info_result = subprocess.run(info_cmd, shell=True, capture_output=True, text=True)
+        app.logger.info(f"État de l'appareil: {info_result.stdout[:500]}")
 
-        # 4. Analyser le résultat
-        output = connect_result.stdout + connect_result.stderr
-        if 'Connection successful' in output:
-            return jsonify({'success': True, 'message': f'Connecté à {address}'})
+        # 3. Détecter si l'appareil est connecté ('Connected: yes' dans la sortie)
+        if 'Connected: yes' in info_result.stdout:
+            app.logger.info(f"SUCCÈS : Appareil {address} est connecté.")
+            return jsonify({'success': True, 'message': f'Appareil {address} connecté avec succès.'})
         else:
-            # Essayer de récupérer un message d'erreur plus précis
-            error_lines = [line for line in output.split('\\n') if 'Failed' in line or 'Error' in line or 'not available' in line]
-            error_msg = error_lines[0] if error_lines else 'Raison inconnue (voir les logs de l\'add-on)'
-            return jsonify({'success': False, 'error': f'Échec de la connexion : {error_msg}'}), 500
+            # Si non connecté, essayer de voir pourquoi
+            error_msg = "Connexion échouée. Assurez-vous que l'appareil est allumé, appairé et à portée."
+            if 'Device not available' in info_result.stdout:
+                error_msg = "Appareil non disponible (hors de portée ou éteint)."
+            app.logger.warning(f"ÉCHEC : {error_msg}")
+            return jsonify({'success': False, 'error': error_msg}), 500
 
     except subprocess.TimeoutExpired:
-        return jsonify({'success': False, 'error': 'Timeout : la commande a pris trop de temps.'}), 500
+        app.logger.error("Timeout lors de la commande bluetoothctl")
+        return jsonify({'success': False, 'error': 'La commande a pris trop de temps.'}), 500
     except Exception as e:
-        # Cette exception capture toute autre erreur et la logge
-        app.logger.error(f"Erreur inattendue dans connect_device: {str(e)}")
-        return jsonify({'success': False, 'error': f'Erreur interne: {str(e)}'}), 500
+        app.logger.error(f"Erreur inattendue: {str(e)}")
+        return jsonify({'success': False, 'error': f'Erreur interne du serveur: {str(e)}'}), 500
+
 
 if __name__ == '__main__':
     # DÉMARRAGE DU SERVEUR - host='0.0.0.0' est essentiel

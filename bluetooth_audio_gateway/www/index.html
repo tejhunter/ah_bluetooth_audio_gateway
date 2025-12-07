@@ -33,17 +33,24 @@
             const data = await response.json();
             const container = document.getElementById('devices');
             
+            <!-- Dans la fonction scanDevices() de votre index.html -->
             if (data.success && data.devices.length > 0) {
                 container.innerHTML = '<h3>Appareils trouvés :</h3>';
                 data.devices.forEach(device => {
                     const div = document.createElement('div');
                     div.className = 'device';
-                    div.innerHTML = `<strong>${device.name}</strong> (${device.address}) 
-                                    <button onclick="connectDevice('${device.address}')">Connecter</button>`;
+                    // Icône et état visuel
+                    const statusIcon = device.connected ? '🟢' : '⚪';
+                    const statusText = device.connected ? 'Connecté' : 'Déconnecté';
+                    div.innerHTML = `
+                        <strong>${device.name}</strong><br>
+                        <small>${device.address} • ${statusIcon} ${statusText} • ${device.icon}</small><br>
+                        <button onclick="connectDevice('${device.address}')" ${device.connected ? 'disabled' : ''}>
+                            ${device.connected ? 'Déjà connecté' : 'Connecter'}
+                        </button>
+                    `;
                     container.appendChild(div);
                 });
-            } else {
-                container.innerHTML = '<p>Aucun appareil trouvé ou erreur de scan.</p>';
             }
         }
 
