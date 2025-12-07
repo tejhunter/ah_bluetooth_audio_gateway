@@ -1,37 +1,28 @@
 #!/usr/bin/env bashio
 set -e
 
-bashio::log.info "Initialisation du Bluetooth Audio Gateway..."
+bashio::log.info "Initialisation du Bluetooth Audio Gateway (BlueALSA)..."
 sleep 2
 
 # === 1. UTILISATION DU DBUS SYSTÈME DÉJÀ PRÉSENT ===
-# Le bus système D-Bus est fourni par le système hôte (Home Assistant OS)
 export DBUS_SYSTEM_BUS_ADDRESS="unix:path=/run/dbus/system_bus_socket"
 bashio::log.info "Utilisation du bus D-Bus système existant..."
 
-# Vérification que le socket est accessible
 if [ ! -S "$DBUS_SYSTEM_BUS_ADDRESS" ]; then
-    bashio::log.warning "⚠️  Le socket D-Bus système n'est pas trouvé. Vérification des alternatives..."
-    # Recherche d'autres sockets potentiels
+    bashio::log.warning "⚠️  Socket D-Bus principal non trouvé. Recherche d'alternatives..."
     if [ -S "/var/run/dbus/system_bus_socket" ]; then
         export DBUS_SYSTEM_BUS_ADDRESS="unix:path=/var/run/dbus/system_bus_socket"
         bashio::log.info "Socket D-Bus trouvé sur /var/run/dbus/system_bus_socket"
     else
-        bashio::log.error "❌ Aucun socket D-Bus système trouvé. L'add-on ne peut pas fonctionner."
+        bashio::log.error "❌ Aucun socket D-Bus système trouvé."
         exit 1
     fi
 fi
 
 # === 2. DÉMARRAGE SERVICE BLUETOOTH ===
-bashio::log.info "Démarrage du service Bluetooth..."
-# Vérifier si bluez est installé
-if ! command -v bluetoothd &> /dev/null; then
-    bashio::log.error "bluetoothd non trouvé. Installation de bluez-deprecated..."
-    apk add --no-cache bluez-deprecated
-fi
-
-# Démarrer bluetoothd
-bluetoothd --debug --nodetach &
+bashio::log.info "Démarrage du démon Bluetooth (bluetoothd)..."
+# Démarrer bluetoothd simplement
+bluetoothd --nodetach &
 BLUETOOTHD_PID=$!
 sleep 3
 
@@ -42,60 +33,48 @@ hciconfig hci0 up || {
     exit 1
 }
 hciconfig hci0 piscan || bashio::log.warning "Mode 'piscan' non critique."
-
-# === 4. CONFIGURATION ENVIRONNEMENT PIPEWIRE ===
-bashio::log.info "Configuration de l'environnement PipeWire..."
-export XDG_RUNTIME_DIR="/tmp/pipewire"
-mkdir -p "$XDG_RUNTIME_DIR" && chmod 0700 "$XDG_RUNTIME_DIR"
-export PIPEWIRE_RUNTIME_DIR="$XDG_RUNTIME_DIR"
-
-# Variables d'environnement pour éviter les erreurs D-Bus
-export DISPLAY=:0
-export PULSE_RUNTIME_PATH="$XDG_RUNTIME_DIR"
-
-# Démarrer PipeWire et ses composants
-bashio::log.info "Démarrage de PipeWire..."
-pipewire &
 sleep 2
 
-bashio::log.info "Démarrage de WirePlumber..."
-wireplumber &
-sleep 2
+# === 4. DÉMARRAGE DU DÉMON BLUEALSA ===
+bashio::log.info "Démarrage du démon BlueALSA (profil A2DP)..."
+# Démarrer BlueALSA avec le profil audio stéréo standard
+bluealsa --profile=a2dp-sink --profile=a2dp-source &
+BLUEALSA_PID=$!
+sleep 3
 
-bashio::log.info "Démarrage de pipewire-pulse..."
-pipewire-pulse &
-sleep 4
-
-# === 5. VÉRIFICATION PIPEWIRE ===
-if pactl info 2>&1 | grep -q "PipeWire"; then
-    bashio::log.info "✅ PipeWire est opérationnel."
-    pactl info | grep "Server Name" | head -1
+# Vérification rapide
+if pgrep -x "bluealsa" > /dev/null; then
+    bashio::log.info "✅ BlueALSA est en cours d'exécution."
 else
-    bashio::log.warning "⚠️  PipeWire ne semble pas actif, tentative de redémarrage..."
-    pkill -f pipewire
-    pipewire &
-    pipewire-pulse &
-    sleep 3
+    bashio::log.error "❌ BlueALSA n'a pas démarré correctement."
+    exit 1
 fi
 
-# === 6. ACTIVER LE MODULE BLUETOOTH DE PIPEWIRE ===
-bashio::log.info "Chargement du module Bluetooth PipeWire..."
-pactl load-module module-bluetooth-discover || {
-    bashio::log.warning "Module Bluetooth déjà chargé ou erreur de chargement"
-}
+# === 5. VÉRIFICATION DES PÉRIPHÉRIQUEs BLUEALSA ===
+bashio::log.info "Vérification de l'état BlueALSA..."
+if command -v bluealsa-aplay &> /dev/null; then
+    bashio::log.info "Liste des périphériques détectés par BlueALSA:"
+    bluealsa-aplay --list-devices 2>/dev/null || bashio::log.warning "Aucun périphérique pour l'instant."
+else
+    bashio::log.warning "bluealsa-aplay non trouvé."
+fi
 
-# === 7. VÉRIFICATION DES PERIPHERIQUES ===
-bashio::log.info "Liste des périphériques audio disponibles:"
-pactl list sinks short
+# === 6. CONFIGURATION AUDIO MINIMALE (ALSA) ===
+bashio::log.info "Configuration de l'environnement ALSA..."
+export ALSA_PCM_CARD="bluealsa"
 
-bashio::log.info "Liste des cartes audio:"
-pactl list cards short
-
-# === 8. DÉMARRAGE SERVEUR API ===
+# === 7. DÉMARRAGE SERVEUR API ===
 bashio::log.info "Démarrage du serveur API Flask..."
 if [ ! -f "/api/server.py" ]; then
     bashio::log.error "ERREUR : /api/server.py introuvable !"
     exit 1
 fi
+
+# Log final
+bashio::log.info "========================================"
+bashio::log.info "✅ Bluetooth Audio Gateway opérationnel"
+bashio::log.info "✅ Backend audio : BlueALSA"
+bashio::log.info "✅ API disponible sur le port 3000"
+bashio::log.info "========================================"
 
 exec python3 /api/server.py

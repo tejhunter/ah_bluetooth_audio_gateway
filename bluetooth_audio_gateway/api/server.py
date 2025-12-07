@@ -4,7 +4,6 @@ import subprocess
 import json
 import os
 import time
-import dbus
 import tempfile
 import wave
 import math
@@ -25,78 +24,47 @@ def serve_static(filename):
 
 # ========== FONCTIONS UTILITAIRES ==========
 
-def _find_bluetooth_sink(device_address):
-    """Trouve le sink PulseAudio correspondant à un périphérique Bluetooth."""
+def _run_cmd(cmd, timeout=30, shell=False):
+    """Exécute une commande et retourne (succès, sortie)."""
     try:
-        # Formater l'adresse MAC comme dans le nom du sink
-        # Format attendu: bluez_output.XX_XX_XX_XX_XX_XX.a2dp-sink
-        formatted_addr = device_address.replace(':', '_').lower()
-        
-        # Lister tous les sinks
-        ok, out = _run_cmd(['pactl', 'list', 'sinks', 'short'])
-        if not ok:
-            app.logger.error("Impossible de lister les sinks")
-            return None
-        
-        app.logger.info(f"Recherche du sink pour {formatted_addr}")
-        app.logger.info(f"Sinks disponibles:\n{out}")
-        
-        for line in out.splitlines():
-            parts = line.split()
-            if len(parts) >= 2:
-                sink_name = parts[1]
-                if formatted_addr in sink_name:
-                    app.logger.info(f"Sink trouvé: {sink_name}")
-                    return sink_name
-        
-        # Si non trouvé, vérifier les cartes Bluetooth
-        ok, out = _run_cmd(['pactl', 'list', 'cards', 'short'])
-        app.logger.info(f"Cartes disponibles:\n{out}")
-        
-        return None
-        
+        result = subprocess.run(cmd, shell=shell, capture_output=True, text=True, timeout=timeout)
+        combined = (result.stdout + '\n' + result.stderr).strip()
+        return result.returncode == 0, combined
+    except subprocess.TimeoutExpired:
+        return False, 'Timeout'
     except Exception as e:
-        app.logger.error(f"Erreur _find_bluetooth_sink: {e}")
-        return None
-    
-def _find_pulse_sink_for_address(device_address):
-    """Tente de trouver l'ID d'un sink PulseAudio correspondant à une adresse MAC Bluetooth."""
-    try:
-        # Lister tous les sinks et filtrer par propriété 'device.api' ou nom
-        ok, out = _run_cmd(['pactl', 'list', 'short', 'sinks'])
-        if not ok:
-            return None
-        for line in out.splitlines():
-            parts = line.split('\t')
-            if len(parts) >= 2:
-                sink_name = parts[1]
-                # Le nom du sink contient souvent l'adresse MAC (format varié)
-                # Ex: bluez_output.XX_XX_XX_XX_XX_XX.a2dp-sink
-                if device_address.replace(':', '_').lower() in sink_name.lower():
-                    return sink_name
-        app.logger.info(f"Aucun sink PulseAudio trouvé pour l'adresse {device_address}")
-    except Exception as e:
-        app.logger.warning(f"Erreur lors de la recherche du sink: {e}")
-    return None
+        return False, str(e)
 
-def _log_audio_diagnostic():
-    """Log des informations de diagnostic audio pour le débogage."""
-    try:
-        app.logger.info("--- DIAGNOSTIC AUDIO PIPEWIRE ---")
-        # État de PipeWire
-        ok, out = _run_cmd(['pactl', 'info'], timeout=3)
-        app.logger.info(f"PulseAudio Server Info: {out[:300]}")
-        # Liste des sinks
-        ok, out = _run_cmd(['pactl', 'list', 'short', 'sinks'], timeout=3)
-        app.logger.info(f"Sinks disponibles: {out[:500]}")
-        # Vérifier si le module Bluetooth est chargé
-        ok, out = _run_cmd(['pactl', 'list', 'short', 'modules'], timeout=3)
-        if 'module-bluez5-device' in out:
-            app.logger.info("Module Bluetooth PipeWire chargé.")
-    except Exception as e:
-        app.logger.error(f"Erreur durant le diagnostic: {e}")
+def _which(cmd):
+    """Vérifie si une commande existe."""
+    return shutil.which(cmd) is not None
 
-        
+def _generate_tone_wav(path, duration=1.0, freq=440.0, volume=0.5, samplerate=44100):
+    """Génère un fichier WAV mono d'un ton sinusoidal."""
+    n_samples = int(samplerate * duration)
+    amplitude = int(32767 * max(0.0, min(1.0, volume)))
+
+    with wave.open(path, 'w') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # 16 bits
+        wf.setframerate(samplerate)
+
+        for i in range(n_samples):
+            t = float(i) / samplerate
+            sample = amplitude * math.sin(2.0 * math.pi * freq * t)
+            wf.writeframes(struct.pack('<h', int(sample)))
+
+def _check_bluealsa_device(address):
+    """Vérifie si BlueALSA détecte l'appareil comme périphérique audio."""
+    try:
+        formatted_addr = address.replace(':', '_').lower()
+        cmd = f"bluealsa-aplay --list-devices 2>/dev/null | grep {formatted_addr} || true"
+        ok, out = _run_cmd(cmd, shell=True, timeout=5)
+        return ok and out.strip() != ''
+    except Exception as e:
+        app.logger.warning(f"Erreur _check_bluealsa_device: {e}")
+        return False
+
 def get_device_details(mac_address):
     """Récupère les informations détaillées d'un appareil Bluetooth."""
     try:
@@ -112,13 +80,11 @@ def get_device_details(mac_address):
             'name': 'Name not found',
             'device_class': '0x000000',
             'icon': 'mdi:bluetooth',
-            'is_ble': False  # Valeur par défaut
+            'is_ble': False,
+            'audio_ready': False  # Nouveau: si BlueALSA voit l'appareil
         }
 
-        # Variables temporaires pour l'extraction
-        uuids_found = []
-        
-        # Extraire le nom, la classe et les UUIDs
+        # Extraire le nom, la classe
         for line in output.split('\n'):
             line = line.strip()
             if line.startswith('Name:'):
@@ -134,132 +100,53 @@ def get_device_details(mac_address):
                     details['icon'] = 'mdi:watch'
                 elif '0x1f00' in class_hex:  # Computer
                     details['icon'] = 'mdi:laptop'
-            elif 'UUID:' in line:
-                # Extraire l'UUID (généralement entre parenthèses)
-                if '(' in line and ')' in line:
-                    uuid = line.split('(')[1].split(')')[0].strip().lower()
-                    uuids_found.append(uuid)
-
-        # Détection BLE basée sur les UUIDs trouvés
-        if uuids_found:
-            ble_uuids = ['fe95', 'fdab', 'fef3', 'a201']
-            for uuid in uuids_found:
-                if any(ble_uuid in uuid for ble_uuid in ble_uuids):
+            elif 'UUID:' in line and '(' in line and ')' in line:
+                uuid = line.split('(')[1].split(')')[0].strip().lower()
+                if any(ble_uuid in uuid for ble_uuid in ['fe95', 'fdab', 'fef3', 'a201']):
                     details['is_ble'] = True
-                    # Pour les appareils BLE, ajuster l'icône
                     if details['icon'] == 'mdi:bluetooth':
                         details['icon'] = 'mdi:watch' if 'watch' in details['name'].lower() else 'mdi:bluetooth'
-                    break
+
+        # Vérifier si BlueALSA voit l'appareil (seulement si connecté)
+        if details['connected']:
+            details['audio_ready'] = _check_bluealsa_device(mac_address)
         
         return details
     except Exception as e:
         app.logger.error(f"Erreur get_device_details pour {mac_address}: {e}")
         return None
-    
-
-def _generate_tone_wav(path, duration=1.0, freq=440.0, volume=0.5, samplerate=44100):
-    """Génère un petit fichier WAV mono (PCM 16 bits) d'un ton sinusoidal.
-
-    Le fichier est écrit sur `path`.
-    """
-    n_samples = int(samplerate * duration)
-    amplitude = int(32767 * max(0.0, min(1.0, volume)))
-
-    with wave.open(path, 'w') as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)  # 16 bits
-        wf.setframerate(samplerate)
-
-        for i in range(n_samples):
-            t = float(i) / samplerate
-            sample = amplitude * math.sin(2.0 * math.pi * freq * t)
-            wf.writeframes(struct.pack('<h', int(sample)))
-
-
-def _run_cmd(cmd, timeout=30, shell=False):
-    try:
-        result = subprocess.run(cmd, shell=shell, capture_output=True, text=True, timeout=timeout)
-        combined = (result.stdout + '\n' + result.stderr).strip()
-        return result.returncode == 0, combined
-    except subprocess.TimeoutExpired:
-        return False, 'Timeout'
-    except Exception as e:
-        return False, str(e)
-
-
-def _which(cmd):
-    return shutil.which(cmd) is not None
-
-
-@app.route('/api/audio_tools', methods=['GET'])
-def audio_tools():
-    """Retourne quels utilitaires audio sont disponibles dans l'environnement.
-
-    Utile pour debugging sans avoir à entrer dans le conteneur.
-    """
-    try:
-        tools = ['aplay', 'paplay', 'ffplay', 'pactl', 'bluealsa-aplay', 'bluealsa']
-        found = {t: _which(t) for t in tools}
-
-        # Si pactl est présent, retourner aussi la liste des sinks (court extrait)
-        sinks = None
-        if found.get('pactl'):
-            ok, out = _run_cmd(['pactl', 'list', 'sinks', 'short'])
-            sinks = out[:1000]
-
-        # Vérifier si BlueALSA daemon est en cours d'exécution
-        bluealsa_running = False
-        bluealsa_info = "Not running"
-        if found.get('bluealsa'):
-            # Chercher le processus bluealsa
-            ps_ok, ps_out = _run_cmd(['pgrep', '-f', 'bluealsa'], timeout=5)
-            if ps_ok:
-                bluealsa_running = True
-                bluealsa_info = "Running"
-            else:
-                bluealsa_info = "Not found in process list"
-
-        return jsonify({
-            'success': True, 
-            'tools': found, 
-            'sinks': sinks,
-            'bluealsa_daemon': {'running': bluealsa_running, 'info': bluealsa_info}
-        })
-    except Exception as e:
-        app.logger.error(f"Erreur audio_tools: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-    
 
 # ========== ENDPOINTS API ==========
 @app.route('/api/status', methods=['GET'])
 def get_status():
     """Endpoint de test pour vérifier que le serveur fonctionne."""
-    return jsonify({'status': 'ok', 'service': 'Bluetooth Audio Gateway'})
+    return jsonify({
+        'status': 'ok', 
+        'service': 'Bluetooth Audio Gateway (BlueALSA)',
+        'backend': 'BlueALSA'
+    })
 
 @app.route('/api/devices', methods=['GET'])
 def get_devices():
     """Lister les appareils Bluetooth avec leur état."""
     try:
-        # 1. Obtenir la liste brute des appareils connus
+        # Obtenir la liste brute des appareils connus
         list_result = subprocess.run(['bluetoothctl', 'devices'], 
                                    capture_output=True, text=True)
-        
-        app.logger.info(f"Sortie de bluetoothctl devices: {list_result.stdout}")
         
         devices = []
         
         for line in list_result.stdout.split('\n'):
             if line.strip():
                 parts = line.split(' ', 2)
-                app.logger.info(f"Ligne parsée: {parts}")
                 if len(parts) >= 3:
                     mac_address = parts[1]
                     details = get_device_details(mac_address)
                     if details:
                         devices.append(details)
 
-        # 2. Trier : appareils connectés en premier
-        devices.sort(key=lambda x: x['connected'], reverse=True)
+        # Trier : appareils connectés en premier
+        devices.sort(key=lambda x: (x['connected'], x['audio_ready']), reverse=True)
 
         return jsonify({'success': True, 'devices': devices})
 
@@ -269,7 +156,7 @@ def get_devices():
 
 @app.route('/api/connect', methods=['POST'])
 def connect_device():
-    """Connecter à un appareil Bluetooth."""
+    """Connecter à un appareil Bluetooth et vérifier la disponibilité audio."""
     try:
         data = request.get_json()
         address = data.get('address')
@@ -278,7 +165,7 @@ def connect_device():
         if not address:
             return jsonify({'success': False, 'error': 'Adresse MAC requise'}), 400
 
-        # 1. Vérifier l'état
+        # 1. Vérifier l'état actuel
         info_cmd = f"echo 'info {address}' | bluetoothctl"
         info_result = subprocess.run(info_cmd, shell=True, 
                                    capture_output=True, text=True, timeout=5)
@@ -287,7 +174,7 @@ def connect_device():
         paired = 'Paired: yes' in info_output
         trusted = 'Trusted: yes' in info_output
 
-        # 2. Gérer l'état incohérent (trusted mais pas paired)
+        # 2. Corriger état incohérent
         if not paired and trusted:
             app.logger.info("Correction état incohérent...")
             untrust_cmd = f"echo -e 'untrust {address}\\n' | bluetoothctl"
@@ -308,13 +195,13 @@ def connect_device():
                 subprocess.run(trust_cmd, shell=True, capture_output=True, text=True)
                 time.sleep(2)
 
-        # 4. Connexion principale
+        # 4. Connexion avec vérification BlueALSA
         app.logger.info(f"Tentative de connexion...")
         connect_cmd = f"echo -e 'connect {address}\\n' | timeout 15 bluetoothctl"
         result = subprocess.run(connect_cmd, shell=True, 
                               capture_output=True, text=True, timeout=20)
         
-        time.sleep(3)
+        time.sleep(3)  # Laisser le temps au profil audio de s'établir
 
         # 5. Vérification finale
         final_info_cmd = f"echo 'info {address}' | bluetoothctl"
@@ -323,8 +210,24 @@ def connect_device():
         final_output = final_info_result.stdout
 
         if 'Connected: yes' in final_output:
-            app.logger.info(f"SUCCÈS : {address} connecté.")
-            return jsonify({'success': True, 'message': f'Appareil connecté.'})
+            # Vérifier si BlueALSA voit l'appareil
+            audio_ready = _check_bluealsa_device(address)
+            
+            if audio_ready:
+                app.logger.info(f"✅ SUCCÈS : {address} connecté ET visible comme périphérique audio.")
+                return jsonify({
+                    'success': True, 
+                    'message': 'Appareil connecté et prêt pour l\'audio.',
+                    'audio_ready': True
+                })
+            else:
+                app.logger.warning(f"⚠️  Connecté mais audio non détecté par BlueALSA.")
+                return jsonify({
+                    'success': True,
+                    'message': 'Appareil connecté en Bluetooth, mais profil audio non encore actif.',
+                    'audio_ready': False,
+                    'warning': 'Le son peut ne pas fonctionner immédiatement. Réessayez dans 5-10 secondes.'
+                })
         else:
             error_msg = "Connexion échouée."
             if 'Device not available' in final_output:
@@ -403,165 +306,49 @@ def repair_device():
     except Exception as e:
         app.logger.error(f"Erreur ré-appairage: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
-    
-
-@app.route('/api/ble_connect', methods=['POST'])
-def connect_ble_device():
-    """Connecter à un appareil BLE (version simplifiée sans GLib)."""
-    try:
-        data = request.get_json()
-        address = data.get('address')
-        
-        if not address:
-            return jsonify({'success': False, 'error': 'Adresse MAC requise'}), 400
-
-        # Utiliser bluetoothctl avec l'option --le (Low Energy)
-        cmd = f"echo -e 'connect {address}\\n' | bluetoothctl --le"
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
-        
-        app.logger.info(f"Sortie BLE: {result.stdout[:200]}")
-        
-        if 'Connection successful' in result.stdout:
-            return jsonify({'success': True, 'message': f'Connexion BLE à {address} établie.'})
-        else:
-            # Pour BLE, on peut aussi essayer avec gatttool
-            ble_cmd = f"gatttool -b {address} --interactive"
-            test_result = subprocess.run(
-                f"echo 'exit' | {ble_cmd}", 
-                shell=True, capture_output=True, text=True, timeout=10
-            )
-            
-            if 'Connection successful' in test_result.stdout:
-                return jsonify({'success': True, 'message': 'Connexion BLE (via gatttool) établie.'})
-            else:
-                return jsonify({
-                    'success': False, 
-                    'error': 'Échec connexion BLE. L\'appareil nécessite peut-être une app spécifique.',
-                    'details': result.stderr[:200]
-                }), 500
-                
-    except Exception as e:
-        app.logger.error(f"Erreur BLE: {str(e)}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-    
-
 
 @app.route('/api/play_test_sound', methods=['POST'])
 def play_test_sound():
-    """Joue un son de test sur le périphérique Bluetooth spécifié."""
+    """Joue un son de test via BlueALSA."""
     tmp_path = None
     try:
         data = request.get_json() or {}
         address = data.get('address')
-        app.logger.info(f"Test audio pour {address}")
+        app.logger.info(f"Test audio BlueALSA pour {address}")
 
-        # 1. Vérifier que l'appareil est connecté
-        info_cmd = f"echo 'info {address}' | bluetoothctl"
-        info_result = subprocess.run(info_cmd, shell=True, capture_output=True, text=True, timeout=5)
-        
-        if 'Connected: no' in info_result.stdout:
+        # 1. Vérifier que l'appareil est connecté ET vu par BlueALSA
+        if not _check_bluealsa_device(address):
             return jsonify({
                 'success': False, 
-                'error': 'Appareil non connecté. Connectez-le d\'abord.'
+                'error': 'Appareil non détecté par BlueALSA. Connectez-le d\'abord via /api/connect et attendez quelques secondes.'
             }), 400
 
-        # 2. Trouver le sink Bluetooth correspondant
-        sink_name = _find_bluetooth_sink(address)
-        if not sink_name:
-            app.logger.warning(f"Aucun sink trouvé pour {address}, tentative avec module BlueALSA...")
-            
-            # Essayer BlueALSA comme alternative
-            if _which('bluealsa-aplay'):
-                # Générer le fichier WAV
-                tmpf = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
-                tmp_path = tmpf.name
-                tmpf.close()
-                _generate_tone_wav(tmp_path, duration=2.0, freq=440.0, volume=0.3)
-                
-                cmd = ['bluealsa-aplay', '--profile-a2dp', address, tmp_path]
-                ok, out = _run_cmd(cmd, timeout=10)
-                
-                if ok:
-                    app.logger.info("✅ Son joué avec BlueALSA")
-                    return jsonify({
-                        'success': True, 
-                        'method': 'bluealsa',
-                        'message': 'Test audio envoyé via BlueALSA'
-                    })
-            
-            return jsonify({
-                'success': False,
-                'error': 'Aucun périphérique audio Bluetooth trouvé. Redémarrez la connexion.'
-            }), 400
-
-        # 3. Générer le fichier WAV
+        # 2. Générer un fichier WAV simple
         tmpf = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
         tmp_path = tmpf.name
         tmpf.close()
-        _generate_tone_wav(tmp_path, duration=2.0, freq=440.0, volume=0.3)
+        _generate_tone_wav(tmp_path, duration=1.5, freq=660.0, volume=0.4)
         app.logger.info(f"Fichier de test généré: {tmp_path}")
 
-        # 4. STRATÉGIE 1: paplay avec le sink spécifique
-        if _which('paplay'):
-            app.logger.info(f"Tentative avec paplay sur sink {sink_name}...")
-            cmd = ['paplay', '--device', sink_name, tmp_path]
-            ok, out = _run_cmd(cmd, timeout=10)
-            
-            if ok:
-                app.logger.info("✅ Son joué avec paplay")
-                return jsonify({
-                    'success': True, 
-                    'method': 'pipewire-pulse',
-                    'sink': sink_name
-                })
-
-        # 5. STRATÉGIE 2: pactl play avec stream spécifique
-        app.logger.info("Tentative avec pactl...")
+        # 3. Jouer avec bluealsa-aplay
+        app.logger.info("Lecture via bluealsa-aplay...")
+        cmd = ['bluealsa-aplay', '--profile-a2dp', address, tmp_path]
+        ok, out = _run_cmd(cmd, timeout=10)
         
-        # Créer un stream temporaire
-        ok, stream_index = _run_cmd([
-            'pactl', 'load-module', 'module-null-sink', 
-            'sink_name=test_stream', 'rate=44100'
-        ])
-        
-        if ok and stream_index.isdigit():
-            # Jouer le son
-            play_cmd = [
-                'pactl', 'play-sample', 'test', sink_name
-            ]
-            
-            # D'abord charger l'échantillon
-            load_ok, _ = _run_cmd([
-                'pactl', 'load-sample', tmp_path, 'test'
-            ])
-            
-            if load_ok:
-                play_ok, _ = _run_cmd(play_cmd, timeout=5)
-                if play_ok:
-                    # Nettoyer
-                    _run_cmd(['pactl', 'unload-sample', 'test'])
-                    _run_cmd(['pactl', 'unload-module', stream_index])
-                    
-                    app.logger.info("✅ Son joué avec pactl")
-                    return jsonify({
-                        'success': True,
-                        'method': 'pactl-stream'
-                    })
-
-        # 6. STRATÉGIE 3: ffplay en dernier recours
-        if _which('ffplay'):
-            app.logger.info("Tentative avec ffplay...")
-            cmd = ['ffplay', '-nodisp', '-autoexit', '-f', 'wav', tmp_path]
-            ok, out = _run_cmd(cmd, timeout=10)
-            
-            if ok:
-                app.logger.info("✅ Son joué avec ffplay")
-                return jsonify({'success': True, 'method': 'ffplay'})
-
-        return jsonify({
-            'success': False,
-            'error': 'Impossible de jouer le son. Vérifiez la connexion audio.'
-        }), 500
+        if ok:
+            app.logger.info("✅ Son joué avec BlueALSA")
+            return jsonify({
+                'success': True, 
+                'method': 'bluealsa-aplay',
+                'message': 'Test audio envoyé avec succès.'
+            })
+        else:
+            app.logger.error(f"Échec bluealsa-aplay: {out}")
+            return jsonify({
+                'success': False,
+                'error': 'Échec de la lecture via BlueALSA.',
+                'details': out[:200]
+            }), 500
 
     except Exception as e:
         app.logger.error(f"Erreur play_test_sound: {e}", exc_info=True)
@@ -574,42 +361,42 @@ def play_test_sound():
             except:
                 pass
 
-@app.route('/api/audio_status', methods=['GET'])
-def audio_status():
-    """Vérifie l'état du système audio et des périphériques Bluetooth."""
+@app.route('/api/audio_tools', methods=['GET'])
+def audio_tools():
+    """Retourne quels utilitaires audio sont disponibles."""
     try:
-        # Informations PipeWire
-        pipewire_ok = False
-        sinks = []
-        cards = []
-        
-        if _which('pactl'):
-            ok, info = _run_cmd(['pactl', 'info'])
-            pipewire_ok = 'PipeWire' in info
-            
-            # Lister les sinks
-            ok, sinks_out = _run_cmd(['pactl', 'list', 'sinks', 'short'])
-            sinks = sinks_out.splitlines()
-            
-            # Lister les cartes
-            ok, cards_out = _run_cmd(['pactl', 'list', 'cards', 'short'])
-            cards = cards_out.splitlines()
-        
+        tools = ['bluealsa-aplay', 'bluealsa', 'aplay', 'bluetoothctl']
+        found = {t: _which(t) for t in tools}
+
+        # Vérifier si BlueALSA daemon est en cours d'exécution
+        bluealsa_running = False
+        bluealsa_info = "Not running"
+        if found.get('bluealsa'):
+            ps_ok, ps_out = _run_cmd(['pgrep', '-f', 'bluealsa'], timeout=5)
+            if ps_ok:
+                bluealsa_running = True
+                bluealsa_info = "Running (PID: " + ps_out.strip().replace('\n', ', ') + ")"
+            else:
+                bluealsa_info = "Not found in process list"
+
+        # Liste des appareils BlueALSA
+        bluealsa_devices = ""
+        if found.get('bluealsa-aplay'):
+            ok, out = _run_cmd(['bluealsa-aplay', '--list-devices'], timeout=5)
+            if ok:
+                bluealsa_devices = out[:500]
+
         return jsonify({
-            'success': True,
-            'pipewire': {
-                'running': pipewire_ok,
-                'sinks': sinks[:10],  # Limiter la sortie
-                'cards': cards[:10]
+            'success': True, 
+            'tools': found, 
+            'bluealsa_daemon': {
+                'running': bluealsa_running, 
+                'info': bluealsa_info
             },
-            'tools': {
-                'pactl': _which('pactl'),
-                'paplay': _which('paplay'),
-                'bluealsa-aplay': _which('bluealsa-aplay'),
-                'ffplay': _which('ffplay')
-            }
+            'bluealsa_devices': bluealsa_devices
         })
     except Exception as e:
+        app.logger.error(f"Erreur audio_tools: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 # ========== DÉMARRAGE ==========

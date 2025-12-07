@@ -22,7 +22,6 @@ RUN apk update && apk add --no-cache \
     pipewire-pulse \
     pipewire-alsa \
     wireplumber \
-    pipewire-spa-bluez \
     ffmpeg \
     curl \
     bash \
@@ -31,6 +30,11 @@ RUN apk update && apk add --no-cache \
     musl-dev \
     python3-dev \
     linux-headers
+
+# Installation de BlueALSA (remplace pipewire-spa-bluez)
+RUN apk add --no-cache --repository=http://dl-cdn.alpinelinux.org/alpine/edge/community \
+    bluealsa \
+    bluez-alsa-utils
 
 # Dépendances Python pour l'API web
 RUN apk add --no-cache \
