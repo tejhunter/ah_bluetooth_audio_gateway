@@ -1,4 +1,4 @@
-ARG BUILD_FROM
+ARG BUILD_FROM=ghcr.io/home-assistant/aarch64-base:latest
 FROM ${BUILD_FROM}
 
 LABEL \
@@ -11,11 +11,7 @@ RUN apk update && apk add --no-cache \
     bluez \
     bluez-deprecated \
     bluez-libs \
-    bluez-openrc \
-    bluez-utils \
-    bluez-btmon \
     dbus \
-    dbus-x11 \
     python3 \
     py3-pip \
     py3-dbus \
@@ -34,21 +30,12 @@ RUN apk update && apk add --no-cache \
     gcc \
     musl-dev \
     python3-dev \
-    linux-headers \
-    pulseaudio-utils \
-    pulseaudio \
-    pulseaudio-bluez
+    linux-headers
 
 # Dépendances Python pour l'API web
 RUN apk add --no-cache \
     py3-flask \
     py3-flask-cors
-
-# Installer BlueALSA depuis les dépôts communautaires
-RUN apk add --no-cache \
-    --repository=http://dl-cdn.alpinelinux.org/alpine/edge/community \
-    bluealsa
-
 
 # Copie des fichiers
 COPY run.sh /
