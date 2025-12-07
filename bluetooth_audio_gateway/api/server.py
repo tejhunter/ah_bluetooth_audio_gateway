@@ -5,8 +5,6 @@ import json
 import os
 import time
 import dbus
-import dbus.mainloop.glib
-from gi.repository import GLib
 
 app = Flask(__name__, static_folder='/www')
 CORS(app)
@@ -35,10 +33,14 @@ def get_device_details(mac_address):
             'trusted': 'Trusted: yes' in output,
             'name': 'Name not found',
             'device_class': '0x000000',
-            'icon': 'mdi:bluetooth'
+            'icon': 'mdi:bluetooth',
+            'is_ble': False  # Valeur par défaut
         }
 
-        # Extraire le nom et la classe
+        # Variables temporaires pour l'extraction
+        uuids_found = []
+        
+        # Extraire le nom, la classe et les UUIDs
         for line in output.split('\n'):
             line = line.strip()
             if line.startswith('Name:'):
@@ -54,19 +56,28 @@ def get_device_details(mac_address):
                     details['icon'] = 'mdi:watch'
                 elif '0x1f00' in class_hex:  # Computer
                     details['icon'] = 'mdi:laptop'
+            elif 'UUID:' in line:
+                # Extraire l'UUID (généralement entre parenthèses)
+                if '(' in line and ')' in line:
+                    uuid = line.split('(')[1].split(')')[0].strip().lower()
+                    uuids_found.append(uuid)
 
-        # Détection BLE (nouveau)
-        details['is_ble'] = False
-        if 'UUIDs' in props:
-            uuids = props['UUIDs']
-            # Si contient des UUIDs BLE spécifiques (Xiaomi, capteurs)
+        # Détection BLE basée sur les UUIDs trouvés
+        if uuids_found:
             ble_uuids = ['fe95', 'fdab', 'fef3', 'a201']
-            details['is_ble'] = any(ble_uuid in uuid.lower() for uuid in uuids for ble_uuid in ble_uuids)
+            for uuid in uuids_found:
+                if any(ble_uuid in uuid for ble_uuid in ble_uuids):
+                    details['is_ble'] = True
+                    # Pour les appareils BLE, ajuster l'icône
+                    if details['icon'] == 'mdi:bluetooth':
+                        details['icon'] = 'mdi:watch' if 'watch' in details['name'].lower() else 'mdi:bluetooth'
+                    break
         
         return details
     except Exception as e:
         app.logger.error(f"Erreur get_device_details pour {mac_address}: {e}")
         return None
+    
 
 # ========== ENDPOINTS API ==========
 @app.route('/api/status', methods=['GET'])
@@ -81,11 +92,15 @@ def get_devices():
         # 1. Obtenir la liste brute des appareils connus
         list_result = subprocess.run(['bluetoothctl', 'devices'], 
                                    capture_output=True, text=True)
+        
+        app.logger.info(f"Sortie de bluetoothctl devices: {list_result.stdout}")
+        
         devices = []
         
         for line in list_result.stdout.split('\n'):
             if line.strip():
                 parts = line.split(' ', 2)
+                app.logger.info(f"Ligne parsée: {parts}")
                 if len(parts) >= 3:
                     mac_address = parts[1]
                     details = get_device_details(mac_address)
