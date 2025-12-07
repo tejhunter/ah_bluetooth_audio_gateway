@@ -106,7 +106,8 @@ def _generate_tone_wav(path, duration=1.0, freq=440.0, volume=0.5, samplerate=44
 def _run_cmd(cmd, timeout=30, shell=False):
     try:
         result = subprocess.run(cmd, shell=shell, capture_output=True, text=True, timeout=timeout)
-        return result.returncode == 0, result.stdout + result.stderr
+        combined = (result.stdout + '\n' + result.stderr).strip()
+        return result.returncode == 0, combined
     except subprocess.TimeoutExpired:
         return False, 'Timeout'
     except Exception as e:
@@ -377,10 +378,20 @@ def play_test_sound():
         # 1) Tentative directe aplay sur sortie par défaut (le plus simple et fiable)
         if _which('aplay'):
             ok, out = _run_cmd(['aplay', tmp_path])
-            app.logger.info(f"aplay direct: ok={ok} out={out[:300]}")
+            app.logger.info(f"aplay direct: ok={ok} output={out[:500]}")
             if ok:
                 os.unlink(tmp_path)
                 return jsonify({'success': True, 'method': 'aplay', 'details': out})
+            else:
+                # Si aplay échoue, log l'erreur complète pour debug
+                app.logger.warning(f"aplay failed with output: {out}")
+                # Essayer avec -D default pour être explicite
+                if address:
+                    ok2, out2 = _run_cmd(['aplay', '-D', 'default', tmp_path])
+                    app.logger.info(f"aplay with -D default: ok={ok2} output={out2[:500]}")
+                    if ok2:
+                        os.unlink(tmp_path)
+                        return jsonify({'success': True, 'method': 'aplay (-D default)', 'details': out2})
 
         # 2) Tentative via bluealsa-aplay (si présent et adresse fournie)
         if _which('bluealsa-aplay') and address:
@@ -441,7 +452,9 @@ def play_test_sound():
         except Exception:
             pass
 
-        return jsonify({'success': False, 'error': 'Aucun lecteur audio disponible dans le conteneur (aplay/paplay/ffplay manquants) ou lecture échouée.'}), 500
+        error_msg = 'Aucun lecteur audio n\'a fonctionné. Vérifiez que aplay est installé et qu\'une carte audio est configurée dans le conteneur.'
+        app.logger.error(f"Toutes les tentatives de lecture ont échoué.")
+        return jsonify({'success': False, 'error': error_msg, 'tools_available': {'aplay': _which('aplay'), 'paplay': _which('paplay'), 'ffplay': _which('ffplay'), 'bluealsa-aplay': _which('bluealsa-aplay')}}), 500
 
     except Exception as e:
         app.logger.error(f"Erreur play_test_sound: {e}")
