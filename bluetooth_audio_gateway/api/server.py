@@ -374,17 +374,24 @@ def play_test_sound():
 
         app.logger.info(f"Fichier de test généré: {tmp_path}")
 
-        # 1) Tentative bluealsa (si aplay présent)
-        if _which('aplay') and address:
-            bluealsa_device = f"bluealsa:HCI=hci0,DEV={address},PROFILE=a2dp"
-            cmd = ['aplay', '-D', bluealsa_device, tmp_path]
-            ok, out = _run_cmd(cmd)
-            app.logger.info(f"Tentative bluealsa: ok={ok} out={out[:300]}")
+        # 1) Tentative directe aplay sur sortie par défaut (le plus simple et fiable)
+        if _which('aplay'):
+            ok, out = _run_cmd(['aplay', tmp_path])
+            app.logger.info(f"aplay direct: ok={ok} out={out[:300]}")
             if ok:
                 os.unlink(tmp_path)
-                return jsonify({'success': True, 'method': 'bluealsa', 'details': out})
+                return jsonify({'success': True, 'method': 'aplay', 'details': out})
 
-        # 2) Tentative via PulseAudio (pactl -> paplay/aplay)
+        # 2) Tentative via bluealsa-aplay (si présent et adresse fournie)
+        if _which('bluealsa-aplay') and address:
+            cmd = ['bluealsa-aplay', address]
+            ok, out = _run_cmd(cmd)
+            app.logger.info(f"Tentative bluealsa-aplay: ok={ok} out={out[:300]}")
+            if ok:
+                os.unlink(tmp_path)
+                return jsonify({'success': True, 'method': 'bluealsa-aplay', 'details': out})
+
+        # 3) Tentative via PulseAudio (pactl -> paplay/aplay)
         if _which('pactl'):
             ok, sinks_out = _run_cmd(['pactl', 'list', 'sinks', 'short'])
             app.logger.info(f"pactl sinks: {sinks_out[:400]}")
@@ -418,14 +425,6 @@ def play_test_sound():
                     if ok:
                         os.unlink(tmp_path)
                         return jsonify({'success': True, 'method': 'pulse+aplay', 'sink': sink_name})
-
-        # 3) Fallback général: aplay sur sortie par défaut
-        if _which('aplay'):
-            ok, out = _run_cmd(['aplay', tmp_path])
-            app.logger.info(f"aplay fallback: ok={ok} out={out[:300]}")
-            if ok:
-                os.unlink(tmp_path)
-                return jsonify({'success': True, 'method': 'aplay', 'details': out})
 
         # 4) ffplay fallback
         if _which('ffplay'):
