@@ -3,6 +3,7 @@ from flask_cors import CORS
 import subprocess
 import json
 import os
+import time
 
 app = Flask(__name__, static_folder='/www')
 CORS(app)
@@ -37,24 +38,24 @@ def get_device_details(mac_address):
             'trusted': 'Trusted: yes' in output,
             'name': 'Name not found',
             'device_class': '0x000000',
-            'icon': 'mdi:bluetooth'  # icône par défaut
+            'icon': 'mdi:bluetooth'
         }
 
-        # Extraire le nom
+        # Extraire le nom ET la classe en parcourant TOUTES les lignes (pas de break prématuré)
         for line in output.split('\n'):
-            if line.strip().startswith('Name:'):
+            line = line.strip()
+            if line.startswith('Name:'):
                 details['name'] = line.split('Name:')[1].strip()
-            elif line.strip().startswith('Class:'):
+            elif line.startswith('Class:'):
                 details['device_class'] = line.split('Class:')[1].strip()
-                # Déduire une icône/type simple à partir de la classe
                 class_hex = details['device_class'].lower()
-                if '0x2404' in class_hex:  # Audio/video (haut-parleur)
+                if '0x2404' in class_hex:
                     details['icon'] = 'mdi:speaker'
-                elif '0x5a020c' in class_hex:  # Smartphone
+                elif '0x5a020c' in class_hex:
                     details['icon'] = 'mdi:cellphone'
-                elif '0x2508' in class_hex:  # Wearable
+                elif '0x2508' in class_hex:
                     details['icon'] = 'mdi:watch'
-                break
+            # Pas de 'break' ici. On continue à lire pour trouver Name et Class.
 
         return details
     except Exception as e:
@@ -102,25 +103,25 @@ def connect_device():
         if not address:
             return jsonify({'success': False, 'error': 'Adresse MAC requise'}), 400
 
-        # 1. Tenter la connexion (sans se soucier du message de sortie)
-        connect_cmd = f"echo -e 'connect {address}\\n' | timeout 10 bluetoothctl"
-        result = subprocess.run(connect_cmd, shell=True, capture_output=True, text=True)
-        app.logger.info(f"Sortie de bluetoothctl: {result.stdout[:200]}...")  # Log partiel
+        # 1. Tenter la connexion avec le timeout géré par Python, pas par la commande shell.
+        connect_cmd = f"echo -e 'connect {address}\\n' | bluetoothctl"
+        result = subprocess.run(connect_cmd, shell=True, capture_output=True, text=True, timeout=10)  # Timeout ici
+        app.logger.info(f"Sortie de bluetoothctl: {result.stdout[:200]}...")
 
-        # Attendre un instant que la connexion s'établisse
         time.sleep(3)
 
         # 2. VÉRIFICATION CRITIQUE : Obtenir l'état actuel de l'appareil
         info_cmd = f"echo 'info {address}' | bluetoothctl"
-        info_result = subprocess.run(info_cmd, shell=True, capture_output=True, text=True)
-        app.logger.info(f"État de l'appareil: {info_result.stdout[:500]}")
+        info_result = subprocess.run(info_cmd, shell=True, capture_output=True, text=True, timeout=5)
+        # Log seulement en cas d'échec pour ne pas surcharger
+        if 'Connected: yes' not in info_result.stdout:
+            app.logger.info(f"État de l'appareil: {info_result.stdout[:500]}")
 
-        # 3. Détecter si l'appareil est connecté ('Connected: yes' dans la sortie)
+        # 3. Détecter si l'appareil est connecté
         if 'Connected: yes' in info_result.stdout:
             app.logger.info(f"SUCCÈS : Appareil {address} est connecté.")
             return jsonify({'success': True, 'message': f'Appareil {address} connecté avec succès.'})
         else:
-            # Si non connecté, essayer de voir pourquoi
             error_msg = "Connexion échouée. Assurez-vous que l'appareil est allumé, appairé et à portée."
             if 'Device not available' in info_result.stdout:
                 error_msg = "Appareil non disponible (hors de portée ou éteint)."
@@ -133,7 +134,6 @@ def connect_device():
     except Exception as e:
         app.logger.error(f"Erreur inattendue: {str(e)}")
         return jsonify({'success': False, 'error': f'Erreur interne du serveur: {str(e)}'}), 500
-
 
 if __name__ == '__main__':
     # DÉMARRAGE DU SERVEUR - host='0.0.0.0' est essentiel
