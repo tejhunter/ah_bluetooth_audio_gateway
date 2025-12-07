@@ -1,142 +1,116 @@
 #!/usr/bin/env bashio
 set -e
+exec 2>&1  # Redirige tous les logs d'erreur vers la sortie standard
 
-bashio::log.info "Initialisation du Bluetooth Audio Gateway (BlueALSA)..."
-sleep 2
+bashio::log.info "=== DÉBUT DU DIAGNOSTIC BLUETOOTH AUDIO GATEWAY ==="
 
-# === 1. CONFIGURATION DU PATH POUR TROUVER LES BINAIRES ===
-# Ajout des chemins standards pour les binaires système
-export PATH="/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+# === ÉTAPE 1: AUDIT COMPLET DU SYSTÈME ===
+bashio::log.info "[1/5] Audit du système et des paquets installés..."
+bashio::log.info "Liste des paquets 'bluez' et 'bluealsa' installés :"
+apk list --installed | grep -i blue 2>/dev/null || bashio::log.warning "Aucun paquet 'blue' trouvé."
 
-# === 2. UTILISATION DU DBUS SYSTÈME DÉJÀ PRÉSENT ===
-export DBUS_SYSTEM_BUS_ADDRESS="unix:path=/run/dbus/system_bus_socket"
-bashio::log.info "Utilisation du bus D-Bus système existant..."
+bashio::log.info "Recherche de tous les binaires liés au Bluetooth :"
+find /usr -type f -name "*blue*" -o -name "*bluetooth*" 2>/dev/null | sort
 
-if [ ! -S "$DBUS_SYSTEM_BUS_ADDRESS" ]; then
-    bashio::log.warning "⚠️  Socket D-Bus principal non trouvé. Recherche d'alternatives..."
-    if [ -S "/var/run/dbus/system_bus_socket" ]; then
-        export DBUS_SYSTEM_BUS_ADDRESS="unix:path=/var/run/dbus/system_bus_socket"
-        bashio::log.info "Socket D-Bus trouvé sur /var/run/dbus/system_bus_socket"
+# === ÉTAPE 2: TENTATIVE FORCÉE D'INSTALLATION BLUETOOTH ===
+bashio::log.info "[2/5] Installation forcée des paquets Bluetooth..."
+bashio::log.info "Installation de bluez bluez-deprecated bluez-libs bluez-openrc..."
+if apk add --no-cache --force-overwrite bluez bluez-deprecated bluez-libs bluez-openrc 2>/dev/null; then
+    bashio::log.info "✅ Paquets Bluetooth installés."
+    # Vérification immédiate
+    if [ -f "/usr/lib/bluetooth/bluetoothd" ]; then
+        BLUETOOTHD_PATH="/usr/lib/bluetooth/bluetoothd"
+        bashio::log.info "✅ bluetoothd trouvé dans /usr/lib/bluetooth/"
+    elif [ -f "/usr/sbin/bluetoothd" ]; then
+        BLUETOOTHD_PATH="/usr/sbin/bluetoothd"
     else
-        bashio::log.error "❌ Aucun socket D-Bus système trouvé."
-        exit 1
+        BLUETOOTHD_PATH=$(find /usr -type f -name "bluetoothd" 2>/dev/null | head -1)
     fi
-fi
-
-# === 3. VÉRIFICATION ET DÉMARRAGE SERVICE BLUETOOTH ===
-bashio::log.info "Vérification de l'installation Bluetooth..."
-
-# Vérifier si bluetoothd existe avec chemin complet
-BLUETOOTHD_PATH=""
-if [ -x "/usr/sbin/bluetoothd" ]; then
-    BLUETOOTHD_PATH="/usr/sbin/bluetoothd"
-elif [ -x "/usr/bin/bluetoothd" ]; then
-    BLUETOOTHD_PATH="/usr/bin/bluetoothd"
 else
-    # Dernière tentative : chercher dans le PATH
-    BLUETOOTHD_PATH=$(which bluetoothd 2>/dev/null || echo "")
+    bashio::log.error "❌ Échec de l'installation des paquets Bluetooth."
 fi
 
-if [ -z "$BLUETOOTHD_PATH" ]; then
-    bashio::log.error "❌ bluetoothd non trouvé. Vérifiez l'installation du paquet 'bluez'."
-    bashio::log.info "Tentative d'installation de bluez-deprecated..."
-    if apk add --no-cache bluez-deprecated 2>/dev/null; then
-        BLUETOOTHD_PATH=$(which bluetoothd)
-        bashio::log.info "✅ bluez-deprecated installé avec succès"
+# === ÉTAPE 3: VÉRIFICATION BLUEALSA (COMPILATION) ===
+bashio::log.info "[3/5] Vérification de BlueALSA (compilé depuis les sources)..."
+# Chercher dans les emplacements d'installation standards
+BLUEALSA_PATHS=(
+    "/usr/bin/bluealsa"
+    "/usr/local/bin/bluealsa"
+    "/usr/sbin/bluealsa"
+)
+BLUEALSA_FOUND=""
+for path in "${BLUEALSA_PATHS[@]}"; do
+    if [ -f "$path" ]; then
+        BLUEALSA_FOUND="$path"
+        bashio::log.info "✅ BlueALSA trouvé : $path"
+        ls -la "$path"
+        # Tester l'exécution
+        if "$path" --version 2>&1 | head -1; then
+            bashio::log.info "✅ BlueALSA s'exécute correctement."
+        fi
+        break
+    fi
+done
+
+if [ -z "$BLUEALSA_FOUND" ]; then
+    bashio::log.error "❌ Aucun binaire BlueALSA trouvé."
+    bashio::log.info "Recherche étendue dans tout le système..."
+    find / -type f -name "bluealsa" 2>/dev/null | head -5
+fi
+
+# === ÉTAPE 4: DÉMARRAGE CONDITIONNEL DES SERVICES ===
+bashio::log.info "[4/5] Démarrage conditionnel des services..."
+# Démarrer bluetoothd si trouvé
+if [ -n "$BLUETOOTHD_PATH" ] && [ -x "$BLUETOOTHD_PATH" ]; then
+    bashio::log.info "Démarrage de bluetoothd depuis $BLUETOOTHD_PATH"
+    # Démarrer en arrière-plan et capturer la sortie
+    $BLUETOOTHD_PATH --nodetach --debug &
+    BLUETOOTHD_PID=$!
+    sleep 5
+    if ps -p $BLUETOOTHD_PID > /dev/null 2>&1; then
+        bashio::log.info "✅ bluetoothd en cours d'exécution (PID: $BLUETOOTHD_PID)"
     else
-        bashio::log.error "❌ Échec de l'installation de bluez-deprecated"
-        exit 1
+        bashio::log.warning "⚠️  bluetoothd peut avoir échoué à démarrer."
     fi
 fi
 
-bashio::log.info "Démarrage du démon Bluetooth (bluetoothd) depuis $BLUETOOTHD_PATH"
-$BLUETOOTHD_PATH --nodetach &
-BLUETOOTHD_PID=$!
-sleep 3
-
-# === 4. ACTIVATION ADAPTATEUR BLUETOOTH ===
-bashio::log.info "Activation de l'adaptateur Bluetooth hci0..."
-hciconfig hci0 up || {
-    bashio::log.error "Échec de l'activation de hci0. Vérifiez les permissions Bluetooth."
-    exit 1
-}
-hciconfig hci0 piscan || bashio::log.warning "Mode 'piscan' non critique."
-sleep 2
-
-# === 5. VÉRIFICATION ET DÉMARRAGE DU DÉMON BLUEALSA ===
-bashio::log.info "Vérification de l'installation BlueALSA..."
-
-# Vérifier si bluealsa existe avec chemin complet
-BLUEALSA_PATH=""
-if [ -x "/usr/bin/bluealsa" ]; then
-    BLUEALSA_PATH="/usr/bin/bluealsa"
-elif [ -x "/usr/local/bin/bluealsa" ]; then
-    BLUEALSA_PATH="/usr/local/bin/bluealsa"
-else
-    # Chercher dans le PATH
-    BLUEALSA_PATH=$(which bluealsa 2>/dev/null || echo "")
-fi
-
-if [ -z "$BLUEALSA_PATH" ]; then
-    bashio::log.error "❌ bluealsa non trouvé. La compilation depuis les sources a peut-être échoué."
-    bashio::log.info "Vérification des fichiers BlueALSA installés..."
-    find /usr -name "bluealsa*" -type f 2>/dev/null | head -10 | while read file; do
-        bashio::log.info "Fichier trouvé: $file"
-    done
-    exit 1
-fi
-
-bashio::log.info "Démarrage du démon BlueALSA depuis $BLUEALSA_PATH"
-$BLUEALSA_PATH --profile=a2dp-sink --profile=a2dp-source &
-BLUEALSA_PID=$!
-sleep 3
-
-# Vérification du démarrage
-if pgrep -x "bluealsa" > /dev/null; then
-    bashio::log.info "✅ BlueALSA est en cours d'exécution."
-else
-    bashio::log.error "❌ BlueALSA n'a pas démarré correctement."
-    # Afficher des informations de débogage
-    bashio::log.info "Tentative de démarrage en mode debug..."
-    $BLUEALSA_PATH --profile=a2dp-sink --verbose &
-    sleep 2
-    if ! pgrep -x "bluealsa" > /dev/null; then
-        bashio::log.error "❌ Échec même en mode debug."
-        exit 1
+# Démarrer BlueALSA si trouvé
+if [ -n "$BLUEALSA_FOUND" ] && [ -x "$BLUEALSA_FOUND" ]; then
+    bashio::log.info "Démarrage de BlueALSA depuis $BLUEALSA_FOUND"
+    $BLUEALSA_FOUND --profile=a2dp-sink --profile=a2dp-source &
+    BLUEALSA_PID=$!
+    sleep 3
+    if pgrep -x "bluealsa" > /dev/null; then
+        bashio::log.info "✅ BlueALSA en cours d'exécution."
+        # Tester bluealsa-aplay
+        if command -v bluealsa-aplay >/dev/null 2>&1; then
+            bashio::log.info "Test de bluealsa-aplay :"
+            bluealsa-aplay --list-devices 2>&1 || true
+        fi
+    else
+        bashio::log.warning "⚠️  BlueALSA n'a pas démarré."
+        # Essayer en mode déverminage
+        bashio::log.info "Tentative en mode debug..."
+        $BLUEALSA_FOUND --profile=a2dp-sink --verbose 2>&1 &
+        sleep 2
     fi
 fi
 
-# === 6. VÉRIFICATION DES PÉRIPHÉRIQUES BLUEALSA ===
-bashio::log.info "Vérification de l'état BlueALSA..."
-if command -v bluealsa-aplay &> /dev/null; then
-    bashio::log.info "Liste des périphériques détectés par BlueALSA:"
-    bluealsa-aplay --list-devices 2>/dev/null || bashio::log.warning "Aucun périphérique pour l'instant."
+# === ÉTAPE 5: DÉMARRAGE DE L'API QUOI QU'IL ARRIVE ===
+bashio::log.info "[5/5] Préparation du démarrage de l'API Flask..."
+bashio::log.info "État final du système :"
+echo "=== PROCESSUS EN COURS ==="
+ps aux | grep -E "(blue|dbus)" || true
+echo "=== PORTS EN ÉCOUTE ==="
+netstat -tuln 2>/dev/null | grep :3000 || true
+
+if [ -f "/api/server.py" ]; then
+    bashio::log.info "========================================"
+    bashio::log.info "🚀 DÉMARRAGE DE L'API FLASK SUR LE PORT 3000"
+    bashio::log.info "========================================"
+    # Cette commande ne retourne pas en cas de succès
+    exec python3 /api/server.py
 else
-    bashio::log.warning "bluealsa-aplay non trouvé."
-    # Chercher le binaire
-    BLUEALSA_APLAY_PATH=$(which bluealsa-aplay 2>/dev/null || find /usr -name "bluealsa-aplay" -type f 2>/dev/null | head -1)
-    if [ -n "$BLUEALSA_APLAY_PATH" ]; then
-        bashio::log.info "bluealsa-aplay trouvé à: $BLUEALSA_APLAY_PATH"
-        export PATH="$(dirname $BLUEALSA_APLAY_PATH):$PATH"
-    fi
-fi
-
-# === 7. CONFIGURATION AUDIO ===
-bashio::log.info "Configuration de l'environnement audio..."
-export ALSA_PCM_CARD="bluealsa"
-
-# === 8. DÉMARRAGE SERVEUR API ===
-bashio::log.info "Démarrage du serveur API Flask..."
-if [ ! -f "/api/server.py" ]; then
-    bashio::log.error "ERREUR : /api/server.py introuvable !"
+    bashio::log.error "FATAL: Fichier /api/server.py introuvable."
     exit 1
 fi
-
-# Log final
-bashio::log.info "========================================"
-bashio::log.info "✅ Bluetooth Audio Gateway initialisé"
-bashio::log.info "✅ Backend audio : BlueALSA"
-bashio::log.info "✅ API disponible sur le port 3000"
-bashio::log.info "========================================"
-
-exec python3 /api/server.py
