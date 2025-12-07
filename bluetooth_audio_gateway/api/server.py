@@ -5,6 +5,11 @@ import json
 import os
 import time
 import dbus
+import tempfile
+import wave
+import math
+import struct
+import shutil
 
 app = Flask(__name__, static_folder='/www')
 CORS(app)
@@ -77,6 +82,39 @@ def get_device_details(mac_address):
     except Exception as e:
         app.logger.error(f"Erreur get_device_details pour {mac_address}: {e}")
         return None
+    
+
+def _generate_tone_wav(path, duration=1.0, freq=440.0, volume=0.5, samplerate=44100):
+    """Génère un petit fichier WAV mono (PCM 16 bits) d'un ton sinusoidal.
+
+    Le fichier est écrit sur `path`.
+    """
+    n_samples = int(samplerate * duration)
+    amplitude = int(32767 * max(0.0, min(1.0, volume)))
+
+    with wave.open(path, 'w') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # 16 bits
+        wf.setframerate(samplerate)
+
+        for i in range(n_samples):
+            t = float(i) / samplerate
+            sample = amplitude * math.sin(2.0 * math.pi * freq * t)
+            wf.writeframes(struct.pack('<h', int(sample)))
+
+
+def _run_cmd(cmd, timeout=30, shell=False):
+    try:
+        result = subprocess.run(cmd, shell=shell, capture_output=True, text=True, timeout=timeout)
+        return result.returncode == 0, result.stdout + result.stderr
+    except subprocess.TimeoutExpired:
+        return False, 'Timeout'
+    except Exception as e:
+        return False, str(e)
+
+
+def _which(cmd):
+    return shutil.which(cmd) is not None
     
 
 # ========== ENDPOINTS API ==========
@@ -293,6 +331,100 @@ def connect_ble_device():
         app.logger.error(f"Erreur BLE: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
     
+
+
+@app.route('/api/play_test_sound', methods=['POST'])
+def play_test_sound():
+    """Joue un petit son de test sur l'appareil Bluetooth indiqué.
+
+    Le corps JSON peut contenir `address` (MAC). Si absent, on tente de jouer
+    sur la sortie audio par défaut.
+    """
+    try:
+        data = request.get_json() or {}
+        address = data.get('address')
+
+        # Générer un WAV temporaire
+        tmpf = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+        tmp_path = tmpf.name
+        tmpf.close()
+        _generate_tone_wav(tmp_path, duration=1.0, freq=660.0, volume=0.4)
+
+        app.logger.info(f"Fichier de test généré: {tmp_path}")
+
+        # 1) Tentative bluealsa (si aplay présent)
+        if _which('aplay') and address:
+            bluealsa_device = f"bluealsa:HCI=hci0,DEV={address},PROFILE=a2dp"
+            cmd = ['aplay', '-D', bluealsa_device, tmp_path]
+            ok, out = _run_cmd(cmd)
+            app.logger.info(f"Tentative bluealsa: ok={ok} out={out[:300]}")
+            if ok:
+                os.unlink(tmp_path)
+                return jsonify({'success': True, 'method': 'bluealsa', 'details': out})
+
+        # 2) Tentative via PulseAudio (pactl -> paplay/aplay)
+        if _which('pactl'):
+            ok, sinks_out = _run_cmd(['pactl', 'list', 'sinks', 'short'])
+            app.logger.info(f"pactl sinks: {sinks_out[:400]}")
+
+            sink_name = None
+            if address and sinks_out:
+                variants = [address, address.replace(':', '_'), address.replace(':', '')]
+                for line in sinks_out.splitlines():
+                    for v in variants:
+                        if v.lower() in line.lower():
+                            parts = line.split('\t')
+                            if len(parts) >= 2:
+                                sink_name = parts[1].strip()
+                                break
+                    if sink_name:
+                        break
+
+            # Si on a trouvé un sink correspondant, le définir et jouer
+            if sink_name:
+                set_ok, set_out = _run_cmd(['pactl', 'set-default-sink', sink_name])
+                app.logger.info(f"Set default sink {sink_name}: {set_out}")
+                if _which('paplay'):
+                    ok, out = _run_cmd(['paplay', tmp_path])
+                    app.logger.info(f"paplay: ok={ok}")
+                    if ok:
+                        os.unlink(tmp_path)
+                        return jsonify({'success': True, 'method': 'pulse+paplay', 'sink': sink_name})
+                # fallback to aplay
+                if _which('aplay'):
+                    ok, out = _run_cmd(['aplay', tmp_path])
+                    if ok:
+                        os.unlink(tmp_path)
+                        return jsonify({'success': True, 'method': 'pulse+aplay', 'sink': sink_name})
+
+        # 3) Fallback général: aplay sur sortie par défaut
+        if _which('aplay'):
+            ok, out = _run_cmd(['aplay', tmp_path])
+            app.logger.info(f"aplay fallback: ok={ok} out={out[:300]}")
+            if ok:
+                os.unlink(tmp_path)
+                return jsonify({'success': True, 'method': 'aplay', 'details': out})
+
+        # 4) ffplay fallback
+        if _which('ffplay'):
+            ok, out = _run_cmd(['ffplay', '-nodisp', '-autoexit', tmp_path])
+            app.logger.info(f"ffplay fallback: ok={ok}")
+            if ok:
+                os.unlink(tmp_path)
+                return jsonify({'success': True, 'method': 'ffplay', 'details': out})
+
+        # Nettoyage et erreur si aucun moyen
+        try:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        except Exception:
+            pass
+
+        return jsonify({'success': False, 'error': 'Aucun lecteur audio disponible dans le conteneur (aplay/paplay/ffplay manquants) ou lecture échouée.'}), 500
+
+    except Exception as e:
+        app.logger.error(f"Erreur play_test_sound: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 

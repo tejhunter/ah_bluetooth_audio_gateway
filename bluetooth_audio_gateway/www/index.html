@@ -502,6 +502,9 @@
                 let actionButtons = '';
                 if (isConnected) {
                     actionButtons = `
+                        <button class="btn-primary" onclick="playTestSound('${device.address}')">
+                            <span>🎶</span> Jouer un son
+                        </button>
                         <button class="btn-danger" onclick="disconnectDevice('${device.address}')">
                             <span>🔌</span> Déconnecter
                         </button>`;
@@ -664,6 +667,30 @@
         document.addEventListener('DOMContentLoaded', () => {
             testAPI(); // Tester l'API au chargement
         });
+        
+        // Jouer un court son de test via l'API
+        async function playTestSound(address) {
+            updateStatus(`Lecture de test vers ${address}...`);
+            try {
+                const response = await fetch('/api/play_test_sound', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ address: address })
+                });
+                const result = await response.json();
+
+                if (result.success) {
+                    updateStatus(`✅ Son joué (${result.method || 'unknown'})`);
+                    alert('Son de test joué.');
+                } else {
+                    updateStatus(`❌ Échec lecture: ${result.error}`, true);
+                    alert(`Échec lecture: ${result.error}`);
+                }
+            } catch (error) {
+                updateStatus(`❌ Erreur réseau: ${error.message}`, true);
+                alert(`Erreur réseau: ${error.message}`);
+            }
+        }
     </script>
 </body>
 </html>
