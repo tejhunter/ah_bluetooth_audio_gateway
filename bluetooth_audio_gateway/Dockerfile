@@ -21,6 +21,8 @@ RUN apk add --no-cache \
     alsa-utils \
     pulseaudio \
     pulseaudio-bluez \
+    pulseaudio-utils \
+    ffmpeg \
     curl \
     bash \
     git \
