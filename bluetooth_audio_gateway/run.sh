@@ -37,6 +37,18 @@ if [ -n "${DEVICE_ADDRESS}" ]; then
     fi
 fi
 
+# Démarrer BlueALSA daemon (nécessaire pour la lecture audio Bluetooth)
+bashio::log.info "Démarrage du daemon BlueALSA..."
+if command -v bluealsa &> /dev/null; then
+    # Lancer bluealsa en arrière-plan
+    bluealsa -D -i hci0 &
+    BLUEALSA_PID=$!
+    bashio::log.info "BlueALSA daemon démarré (PID: $BLUEALSA_PID)"
+    sleep 2
+else
+    bashio::log.warning "BlueALSA non trouvé. La lecture audio Bluetooth peut ne pas fonctionner."
+fi
+
 # Démarrer le serveur API Python
 bashio::log.info "Démarrage du serveur API Flask..."
 
