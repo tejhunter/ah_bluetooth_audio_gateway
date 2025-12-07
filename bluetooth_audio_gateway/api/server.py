@@ -414,38 +414,40 @@ def connect_ble_device():
 @app.route('/api/play_test_sound', methods=['POST'])
 def play_test_sound():
     """Joue un son de test via PipeWire."""
+    tmp_path = None  # Initialisation pour le nettoyage
     try:
         data = request.get_json() or {}
         address = data.get('address')
         app.logger.info(f"Test audio via PipeWire pour {address}")
 
-        # ... (génération du fichier WAV tmp_path comme avant) ...
+        # 1. GÉNÉRER LE FICHIER WAV TEMPORAIRE (CRITIQUE)
+        # Appelle la fonction utilitaire _generate_tone_wav
+        import tempfile
+        tmpf = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+        tmp_path = tmpf.name  # <-- DÉFINIT tmp_path ICI
+        tmpf.close()
+        _generate_tone_wav(tmp_path, duration=1.0, freq=660.0, volume=0.4)
+        app.logger.info(f"Fichier de test généré: {tmp_path}")
 
-        # STRATÉGIE 1: paplay (PipeWire-Pulse) - LA BONNE
+        # 2. STRATÉGIE 1: paplay (PipeWire-Pulse)
         if _which('paplay'):
             app.logger.info("Tentative avec paplay...")
             cmd = ['paplay', tmp_path]
             ok, out = _run_cmd(cmd, timeout=10)
             if ok:
-                os.unlink(tmp_path)
+                app.logger.info("✅ Son joué avec paplay.")
                 return jsonify({'success': True, 'method': 'pipewire-pulse (paplay)'})
 
-        # STRATÉGIE 2: aplay avec périphérique PipeWire
+        # 3. STRATÉGIE 2: aplay avec PipeWire
         if _which('aplay'):
             app.logger.info("Tentative avec aplay -D pipewire...")
-            # PipeWire crée un périphérique ALSA nommé 'pipewire' ou 'default'
-            ok, out = _run_cmd(['aplay', '-D', 'pipewire', tmp_path], timeout=10)
-            if not ok:
-                ok, out = _run_cmd(['aplay', '-D', 'default', tmp_path], timeout=10)
-            if ok:
-                os.unlink(tmp_path)
-                return jsonify({'success': True, 'method': 'pipewire-alsa (aplay)'})
-
-        # NETTOYAGE & ERREUR
-        try:
-            os.unlink(tmp_path)
-        except: pass
-
+            for device in ['pipewire', 'default']:
+                ok, out = _run_cmd(['aplay', '-D', device, tmp_path], timeout=10)
+                if ok:
+                    app.logger.info(f"✅ Son joué avec aplay -D {device}.")
+                    return jsonify({'success': True, 'method': f'pipewire-alsa (aplay -D {device})'})
+        
+        # 4. ÉCHEC DE TOUTES LES MÉTHODES
         app.logger.error("Toutes les méthodes de lecture ont échoué.")
         return jsonify({
             'success': False,
@@ -453,8 +455,16 @@ def play_test_sound():
         }), 500
 
     except Exception as e:
-        app.logger.error(f"Erreur play_test_sound: {e}")
+        app.logger.error(f"Erreur play_test_sound: {e}", exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
+    
+    finally:
+        # 5. NETTOYAGE GARANTI (s'exécute toujours)
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except:
+                pass
 
 
 
