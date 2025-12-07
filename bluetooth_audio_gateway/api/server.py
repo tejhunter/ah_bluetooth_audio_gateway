@@ -115,6 +115,28 @@ def _run_cmd(cmd, timeout=30, shell=False):
 
 def _which(cmd):
     return shutil.which(cmd) is not None
+
+
+@app.route('/api/audio_tools', methods=['GET'])
+def audio_tools():
+    """Retourne quels utilitaires audio sont disponibles dans l'environnement.
+
+    Utile pour debugging sans avoir à entrer dans le conteneur.
+    """
+    try:
+        tools = ['aplay', 'paplay', 'ffplay', 'pactl', 'bluealsa-aplay', 'bluealsa']
+        found = {t: _which(t) for t in tools}
+
+        # Si pactl est présent, retourner aussi la liste des sinks (court extrait)
+        sinks = None
+        if found.get('pactl'):
+            ok, out = _run_cmd(['pactl', 'list', 'sinks', 'short'])
+            sinks = out[:1000]
+
+        return jsonify({'success': True, 'tools': found, 'sinks': sinks})
+    except Exception as e:
+        app.logger.error(f"Erreur audio_tools: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
     
 
 # ========== ENDPOINTS API ==========

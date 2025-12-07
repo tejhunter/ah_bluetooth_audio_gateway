@@ -352,6 +352,9 @@
             <button class="btn-ble" onclick="scanBLEDevices()">
                 <span>📶</span> Scanner BLE
             </button>
+            <button class="btn-warning" onclick="checkAudioTools()">
+                <span>🔊</span> Vérifier outils audio
+            </button>
         </div>
         
         <div class="devices-container">
@@ -685,6 +688,45 @@
                 } else {
                     updateStatus(`❌ Échec lecture: ${result.error}`, true);
                     alert(`Échec lecture: ${result.error}`);
+                }
+            } catch (error) {
+                updateStatus(`❌ Erreur réseau: ${error.message}`, true);
+                alert(`Erreur réseau: ${error.message}`);
+            }
+        }
+        
+        // Vérifier les outils audio disponibles
+        async function checkAudioTools() {
+            updateStatus('Vérification des outils audio...');
+            try {
+                const response = await fetch('/api/audio_tools');
+                const result = await response.json();
+                
+                if (result.success) {
+                    const tools = result.tools;
+                    const available = Object.entries(tools)
+                        .filter(([_, avail]) => avail)
+                        .map(([tool, _]) => tool)
+                        .join(', ');
+                    const unavailable = Object.entries(tools)
+                        .filter(([_, avail]) => !avail)
+                        .map(([tool, _]) => tool)
+                        .join(', ');
+                    
+                    let message = '🔊 Outils audio disponibles:\n\n';
+                    message += `✅ Présents: ${available || 'aucun'}\n`;
+                    message += `❌ Manquants: ${unavailable || 'aucun'}\n\n`;
+                    
+                    if (result.sinks) {
+                        message += `PulseAudio sinks:\n${result.sinks}`;
+                    }
+                    
+                    const count = available.split(',').filter(x => x.trim()).length;
+                    updateStatus(`✅ ${count} outil(s) audio détecté(s)`);
+                    alert(message);
+                } else {
+                    updateStatus(`❌ Erreur: ${result.error}`, true);
+                    alert(`Erreur: ${result.error}`);
                 }
             } catch (error) {
                 updateStatus(`❌ Erreur réseau: ${error.message}`, true);
