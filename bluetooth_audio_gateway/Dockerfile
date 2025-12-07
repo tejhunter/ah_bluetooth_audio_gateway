@@ -31,8 +31,11 @@ RUN apk update && apk add --no-cache \
     python3-dev \
     linux-headers
 
-# Installation de BlueALSA (remplace pipewire-spa-bluez)
-RUN apk add --no-cache --repository=http://dl-cdn.alpinelinux.org/alpine/edge/community \
+# 1. Mettre à jour les URLs des dépôts pour utiliser la version stable (v3.22)
+RUN sed -i 's|http://dl-cdn.alpinelinux.org/alpine/edge/community|https://dl-cdn.alpinelinux.org/alpine/v3.22/community|g' /etc/apk/repositories
+
+# 2. Installer BlueALSA et ses utilitaires depuis le dépôt stable
+RUN apk update && apk add --no-cache \
     bluealsa \
     bluez-alsa-utils
 
