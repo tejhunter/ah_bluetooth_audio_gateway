@@ -16,11 +16,18 @@ RUN apk add --no-cache \
     dbus \
     python3 \
     py3-pip \
+    py3-dbus \           
+    py3-gobject3 \       
     alsa-utils \
     pulseaudio \
     pulseaudio-bluez \
     curl \
-    bash
+    bash \
+    git \
+    gcc \
+    musl-dev \
+    python3-dev \        
+    linux-headers        
 
 # Installation des dépendances Python pour l'API web VIA APK (et non pip)
 RUN apk add --no-cache \

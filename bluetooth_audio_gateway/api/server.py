@@ -4,6 +4,9 @@ import subprocess
 import json
 import os
 import time
+import dbus
+import dbus.mainloop.glib
+from gi.repository import GLib
 
 app = Flask(__name__, static_folder='/www')
 CORS(app)
@@ -52,6 +55,14 @@ def get_device_details(mac_address):
                 elif '0x1f00' in class_hex:  # Computer
                     details['icon'] = 'mdi:laptop'
 
+        # Détection BLE (nouveau)
+        details['is_ble'] = False
+        if 'UUIDs' in props:
+            uuids = props['UUIDs']
+            # Si contient des UUIDs BLE spécifiques (Xiaomi, capteurs)
+            ble_uuids = ['fe95', 'fdab', 'fef3', 'a201']
+            details['is_ble'] = any(ble_uuid in uuid.lower() for uuid in uuids for ble_uuid in ble_uuids)
+        
         return details
     except Exception as e:
         app.logger.error(f"Erreur get_device_details pour {mac_address}: {e}")
@@ -226,6 +237,49 @@ def repair_device():
     except Exception as e:
         app.logger.error(f"Erreur ré-appairage: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
+    
+
+@app.route('/api/ble_connect', methods=['POST'])
+def connect_ble_device():
+    """Connecter à un appareil BLE (version simplifiée sans GLib)."""
+    try:
+        data = request.get_json()
+        address = data.get('address')
+        
+        if not address:
+            return jsonify({'success': False, 'error': 'Adresse MAC requise'}), 400
+
+        # Utiliser bluetoothctl avec l'option --le (Low Energy)
+        cmd = f"echo -e 'connect {address}\\n' | bluetoothctl --le"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+        
+        app.logger.info(f"Sortie BLE: {result.stdout[:200]}")
+        
+        if 'Connection successful' in result.stdout:
+            return jsonify({'success': True, 'message': f'Connexion BLE à {address} établie.'})
+        else:
+            # Pour BLE, on peut aussi essayer avec gatttool
+            ble_cmd = f"gatttool -b {address} --interactive"
+            test_result = subprocess.run(
+                f"echo 'exit' | {ble_cmd}", 
+                shell=True, capture_output=True, text=True, timeout=10
+            )
+            
+            if 'Connection successful' in test_result.stdout:
+                return jsonify({'success': True, 'message': 'Connexion BLE (via gatttool) établie.'})
+            else:
+                return jsonify({
+                    'success': False, 
+                    'error': 'Échec connexion BLE. L\'appareil nécessite peut-être une app spécifique.',
+                    'details': result.stderr[:200]
+                }), 500
+                
+    except Exception as e:
+        app.logger.error(f"Erreur BLE: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+    
+
+
 
 # ========== DÉMARRAGE ==========
 if __name__ == '__main__':

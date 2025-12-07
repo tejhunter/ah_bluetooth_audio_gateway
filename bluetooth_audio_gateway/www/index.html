@@ -115,6 +115,16 @@
             transform: translateY(-2px);
         }
         
+        .btn-ble {
+            background: #9b59b6;
+            color: white;
+        }
+        
+        .btn-ble:hover {
+            background: #8e44ad;
+            transform: translateY(-2px);
+        }
+        
         .devices-container {
             padding: 25px 30px;
         }
@@ -169,6 +179,10 @@
             border-left: 5px solid #95a5a6;
         }
         
+        .device-card.ble {
+            border-top: 3px solid #9b59b6;
+        }
+        
         .device-name {
             font-size: 1.3rem;
             font-weight: bold;
@@ -211,12 +225,18 @@
             color: #7f8c8d;
         }
         
+        .status-ble {
+            background: #e8daef;
+            color: #8e44ad;
+        }
+        
         .device-info {
             display: flex;
             gap: 15px;
             margin-bottom: 20px;
             font-size: 0.9rem;
             color: #5d6d7e;
+            flex-wrap: wrap;
         }
         
         .device-info div {
@@ -264,6 +284,25 @@
             margin: 0 auto 20px;
         }
         
+        .badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+        
+        .badge-classic {
+            background: #3498db;
+            color: white;
+        }
+        
+        .badge-ble {
+            background: #9b59b6;
+            color: white;
+        }
+        
         @keyframes spin {
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
@@ -299,7 +338,7 @@
             </h1>
             <p class="subtitle">
                 Interface de gestion des périphériques Bluetooth pour Home Assistant.
-                Connectez vos enceintes pour la synthèse vocale (TTS) et la reconnaissance vocale (STT).
+                Gestion à la fois du Bluetooth Classique (audio) et Bluetooth Low Energy (BLE).
             </p>
         </header>
         
@@ -310,8 +349,8 @@
             <button class="btn-secondary" onclick="scanDevices()">
                 <span>📡</span> Scanner les appareils
             </button>
-            <button class="btn-warning" onclick="startDiscovery()">
-                <span>🔎</span> Découverte approfondie
+            <button class="btn-ble" onclick="scanBLEDevices()">
+                <span>📶</span> Scanner BLE
             </button>
         </div>
         
@@ -375,21 +414,35 @@
                     renderDevices(currentDevices);
                     updateStatus(`✅ Scan terminé: ${data.devices.length} appareil(s) trouvé(s)`);
                 } else {
-                    devicesDiv.innerHTML = `<p class="error">❌ Erreur: ${data.error}</p>`;
+                    devicesDiv.innerHTML = `<p style="color: #e74c3c; text-align: center; padding: 40px;">❌ Erreur: ${data.error}</p>`;
                     updateStatus(`❌ Erreur scan: ${data.error}`, true);
                 }
             } catch (error) {
-                devicesDiv.innerHTML = `<p class="error">❌ Erreur réseau: ${error.message}</p>`;
+                devicesDiv.innerHTML = `<p style="color: #e74c3c; text-align: center; padding: 40px;">❌ Erreur réseau: ${error.message}</p>`;
                 updateStatus(`❌ Erreur réseau: ${error.message}`, true);
             }
         }
         
-        // Découverte approfondie
-        async function startDiscovery() {
-            updateStatus('Découverte approfondie en cours (peut prendre 30 secondes)...');
-            alert('La découverte approfondie va lancer un scan long. Assurez-vous que vos appareils sont en mode découverte.');
-            // Ici vous pourriez appeler un endpoint spécifique pour un scan long
-            scanDevices(); // Pour l'instant, on utilise le scan normal
+        // Scanner spécifiquement les appareils BLE
+        async function scanBLEDevices() {
+            updateStatus('Scan BLE spécifique en cours...');
+            alert('Le scan BLE va durer 10 secondes. Assurez-vous que vos appareils BLE (montres, capteurs) sont en mode visible.');
+            
+            try {
+                // On utilise le même scan pour l'instant, mais on pourrait avoir un endpoint spécifique
+                const response = await fetch('/api/devices');
+                const data = await response.json();
+                
+                if (data.success) {
+                    // Filtrer seulement les appareils BLE
+                    const bleDevices = data.devices.filter(device => device.is_ble);
+                    currentDevices = bleDevices;
+                    renderDevices(currentDevices);
+                    updateStatus(`✅ Scan BLE terminé: ${bleDevices.length} appareil(s) BLE trouvé(s)`);
+                }
+            } catch (error) {
+                updateStatus(`❌ Erreur scan BLE: ${error.message}`, true);
+            }
         }
         
         // Afficher les appareils
@@ -413,39 +466,85 @@
             
             devices.forEach(device => {
                 const deviceCard = document.createElement('div');
-                deviceCard.className = `device-card ${device.connected ? 'connected' : 'disconnected'}`;
+                const isBLE = device.is_ble || false;
+                const isConnected = device.connected || false;
+                
+                deviceCard.className = `device-card ${isConnected ? 'connected' : 'disconnected'} ${isBLE ? 'ble' : ''}`;
                 
                 // Icône selon le type
                 let icon = '📱';
                 if (device.icon.includes('speaker')) icon = '🔊';
                 if (device.icon.includes('watch')) icon = '⌚';
                 if (device.icon.includes('laptop')) icon = '💻';
+                if (device.icon.includes('cellphone')) icon = '📱';
+                if (device.icon.includes('bluetooth')) icon = '🔵';
+                
+                // Type d'appareil
+                const deviceType = isBLE ? 'BLE' : 'Classique';
+                const typeBadge = `<span class="badge ${isBLE ? 'badge-ble' : 'badge-classic'}">${deviceType}</span>`;
+                
+                // Statut
+                let statusClass = 'status-disconnected';
+                let statusText = '⚪ Déconnecté';
+                let statusIcon = '⚪';
+                
+                if (isConnected) {
+                    statusClass = 'status-connected';
+                    statusText = '🟢 Connecté';
+                    statusIcon = '🟢';
+                } else if (isBLE) {
+                    statusClass = 'status-ble';
+                    statusText = '📶 BLE';
+                    statusIcon = '📶';
+                }
+                
+                // Boutons d'action
+                let actionButtons = '';
+                if (isConnected) {
+                    actionButtons = `
+                        <button class="btn-danger" onclick="disconnectDevice('${device.address}')">
+                            <span>🔌</span> Déconnecter
+                        </button>`;
+                } else if (isBLE) {
+                    actionButtons = `
+                        <button class="btn-ble" onclick="connectBLEDevice('${device.address}')">
+                            <span>📟</span> Connecter (BLE)
+                        </button>`;
+                } else {
+                    actionButtons = `
+                        <button class="btn-primary" onclick="connectDevice('${device.address}')">
+                            <span>🔗</span> Connecter
+                        </button>`;
+                }
+                
+                // Ajouter le bouton de réparation
+                actionButtons += `
+                    <button class="btn-warning" onclick="repairDevice('${device.address}')" title="Forcer un ré-appairage">
+                        <span>🔄</span> Réparer
+                    </button>`;
                 
                 deviceCard.innerHTML = `
                     <div class="device-name">
-                        ${icon} ${device.name}
+                        ${icon} ${device.name} ${typeBadge}
                     </div>
                     <div class="device-address">${device.address}</div>
-                    <div class="device-status ${device.connected ? 'status-connected' : 'status-disconnected'}">
-                        ${device.connected ? '🟢 Connecté' : '⚪ Déconnecté'}
+                    <div class="device-status ${statusClass}">
+                        ${statusIcon} ${statusText}
                     </div>
                     <div class="device-info">
-                        <div title="Classe Bluetooth">⚙️ ${device.device_class}</div>
-                        <div>${device.paired ? '🔗 Appairé' : '🔓 Non appairé'}</div>
-                        <div>${device.trusted ? '✅ De confiance' : '❌ Non fiable'}</div>
+                        <div title="Classe Bluetooth">
+                            <span>⚙️</span> ${device.device_class || 'Inconnue'}
+                        </div>
+                        <div>
+                            ${device.paired ? '🔗 Appairé' : '🔓 Non appairé'}
+                        </div>
+                        <div>
+                            ${device.trusted ? '✅ De confiance' : '❌ Non fiable'}
+                        </div>
+                        ${isBLE ? '<div><span>📶</span> Bluetooth Low Energy</div>' : ''}
                     </div>
                     <div class="device-actions">
-                        ${device.connected ? 
-                            `<button class="btn-danger" onclick="disconnectDevice('${device.address}')">
-                                <span>🔌</span> Déconnecter
-                            </button>` : 
-                            `<button class="btn-primary" onclick="connectDevice('${device.address}')">
-                                <span>🔗</span> Connecter
-                            </button>`
-                        }
-                        <button class="btn-warning" onclick="repairDevice('${device.address}')" title="Forcer un ré-appairage">
-                            <span>🔄</span> Réparer
-                        </button>
+                        ${actionButtons}
                     </div>
                 `;
                 
@@ -453,10 +552,10 @@
             });
         }
         
-        // Connecter un appareil
+        // Connecter un appareil (Bluetooth classique)
         async function connectDevice(address) {
             updateStatus(`Connexion à ${address}...`);
-            if (!confirm(`Voulez-vous connecter cet appareil ?`)) return;
+            if (!confirm(`Voulez-vous connecter cet appareil Bluetooth classique ?`)) return;
             
             try {
                 const response = await fetch('/api/connect', {
@@ -476,6 +575,33 @@
                 }
             } catch (error) {
                 updateStatus(`❌ Erreur: ${error.message}`, true);
+                alert(`Erreur réseau: ${error.message}`);
+            }
+        }
+        
+        // Connecter un appareil BLE
+        async function connectBLEDevice(address) {
+            updateStatus(`Connexion BLE à ${address}...`);
+            if (!confirm(`Cet appareil utilise Bluetooth Low Energy (BLE).\nLa connexion peut être limitée comparée au Bluetooth classique.`)) return;
+            
+            try {
+                const response = await fetch('/api/ble_connect', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ address: address })
+                });
+                const result = await response.json();
+                
+                if (result.success) {
+                    updateStatus(`✅ ${result.message}`);
+                    alert('Connexion BLE établie !');
+                    scanDevices(); // Rafraîchir la liste
+                } else {
+                    updateStatus(`❌ Échec BLE: ${result.error}`, true);
+                    alert(`Erreur BLE: ${result.error}\n${result.details || ''}`);
+                }
+            } catch (error) {
+                updateStatus(`❌ Erreur réseau: ${error.message}`, true);
                 alert(`Erreur réseau: ${error.message}`);
             }
         }
