@@ -375,7 +375,24 @@ def play_test_sound():
 
         app.logger.info(f"Fichier de test généré: {tmp_path}")
 
-        # 1) Tentative directe aplay sur sortie par défaut (le plus simple et fiable)
+        # 1) Tentative via bluealsa-aplay (si présent et adresse fournie)
+        #    Pipe le WAV directement à bluealsa-aplay
+        if _which('bluealsa-aplay') and address:
+            try:
+                with open(tmp_path, 'rb') as wav_file:
+                    result = subprocess.run(['bluealsa-aplay', address], 
+                                          stdin=wav_file,
+                                          capture_output=True, text=True, timeout=10)
+                ok = result.returncode == 0
+                out = (result.stdout + '\n' + result.stderr).strip()
+                app.logger.info(f"bluealsa-aplay with stdin: ok={ok} output={out[:500]}")
+                if ok:
+                    os.unlink(tmp_path)
+                    return jsonify({'success': True, 'method': 'bluealsa-aplay (stdin)', 'details': out})
+            except Exception as e:
+                app.logger.warning(f"bluealsa-aplay stdin attempt failed: {e}")
+
+        # 2) Tentative directe aplay sur sortie par défaut (peut échouer sans carte audio)
         if _which('aplay'):
             ok, out = _run_cmd(['aplay', tmp_path])
             app.logger.info(f"aplay direct: ok={ok} output={out[:500]}")
@@ -383,24 +400,13 @@ def play_test_sound():
                 os.unlink(tmp_path)
                 return jsonify({'success': True, 'method': 'aplay', 'details': out})
             else:
-                # Si aplay échoue, log l'erreur complète pour debug
                 app.logger.warning(f"aplay failed with output: {out}")
                 # Essayer avec -D default pour être explicite
-                if address:
-                    ok2, out2 = _run_cmd(['aplay', '-D', 'default', tmp_path])
-                    app.logger.info(f"aplay with -D default: ok={ok2} output={out2[:500]}")
-                    if ok2:
-                        os.unlink(tmp_path)
-                        return jsonify({'success': True, 'method': 'aplay (-D default)', 'details': out2})
-
-        # 2) Tentative via bluealsa-aplay (si présent et adresse fournie)
-        if _which('bluealsa-aplay') and address:
-            cmd = ['bluealsa-aplay', address]
-            ok, out = _run_cmd(cmd)
-            app.logger.info(f"Tentative bluealsa-aplay: ok={ok} out={out[:300]}")
-            if ok:
-                os.unlink(tmp_path)
-                return jsonify({'success': True, 'method': 'bluealsa-aplay', 'details': out})
+                ok2, out2 = _run_cmd(['aplay', '-D', 'default', tmp_path])
+                app.logger.info(f"aplay with -D default: ok={ok2} output={out2[:500]}")
+                if ok2:
+                    os.unlink(tmp_path)
+                    return jsonify({'success': True, 'method': 'aplay (-D default)', 'details': out2})
 
         # 3) Tentative via PulseAudio (pactl -> paplay/aplay)
         if _which('pactl'):
