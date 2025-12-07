@@ -4,18 +4,22 @@ set -e
 bashio::log.info "Initialisation du Bluetooth Audio Gateway..."
 sleep 2
 
-# === 1. DÉMARRAGE DBUS (Critique pour le bus système) ===
-bashio::log.info "Démarrage de D-Bus..."
-dbus-daemon --system --fork
-sleep 3
+# === 1. UTILISATION DU DBUS SYSTÈME EXISTANT (SUPPRIMER L'ANCIENNE LIGNE) ===
+# NE PAS EXÉCUTER : dbus-daemon --system --fork
+# Le bus système est déjà disponible. S'assurer que les outils l'utilisent.
+export DBUS_SYSTEM_BUS_ADDRESS="unix:path=/run/dbus/system_bus_socket"
+bashio::log.info "Utilisation du bus D-Bus système existant..."
 
-# === 2. DÉMARRAGE SERVICE BLUETOOTH (OpenRC) ===
-bashio::log.info "Démarrage du service Bluetooth système..."
-rc-service bluetooth start 2>/dev/null || {
-    bashio::log.warning "Service bluetooth OpenRC non trouvé. Lancement manuel..."
+# === 2. DÉMARRAGE SERVICE BLUETOOTH ===
+bashio::log.info "Démarrage du service Bluetooth..."
+# Tenter de démarrer via OpenRC, sinon lancer bluetoothd directement.
+if command -v rc-service >/dev/null 2>&1 && rc-service bluetooth start 2>/dev/null; then
+    bashio::log.info "Service Bluetooth démarré via OpenRC."
+else
+    bashio::log.warning "Lancement manuel de bluetoothd..."
     bluetoothd --debug &
     BLUETOOTHD_PID=$!
-}
+fi
 sleep 3
 
 # === 3. ACTIVATION ADAPTATEUR BLUETOOTH ===
@@ -38,7 +42,7 @@ pipewire &
 bashio::log.info "Démarrage de WirePlumber..."
 wireplumber &
 
-bashio::log.info "Démarrage de pipewire-pulse (compatibilité PulseAudio)..."
+bashio::log.info "Démarrage de pipewire-pulse..."
 pipewire-pulse &
 
 sleep 6  # Temps d'initialisation
@@ -46,11 +50,9 @@ sleep 6  # Temps d'initialisation
 # === 5. VÉRIFICATION PIPEWIRE ===
 if pactl info 2>&1 | grep -q "PipeWire"; then
     bashio::log.info "✅ PipeWire est opérationnel."
-    # Log supplémentaire utile
     pactl info | grep "Server Name" | head -1
 else
-    bashio::log.error "❌ PipeWire ne semble pas fonctionner."
-    # On continue malgré tout, le serveur API peut démarrer
+    bashio::log.warning "⚠️  PipeWire ne semble pas actif (peut être normal si démarré plus tard)."
 fi
 
 # === 6. DÉMARRAGE SERVEUR API ===
