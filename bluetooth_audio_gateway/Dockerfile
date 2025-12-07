@@ -6,7 +6,7 @@ LABEL \
     io.hass.description="Bluetooth audio bridge for Home Assistant" \
     io.hass.type="addon"
 
-# Installation des dépendances CRITIQUES
+# 1. Installation des dépendances critiques (base)
 RUN apk update && apk add --no-cache \
     bluez \
     bluez-deprecated \
@@ -31,20 +31,50 @@ RUN apk update && apk add --no-cache \
     python3-dev \
     linux-headers
 
-# 1. Mettre à jour les URLs des dépôts pour utiliser la version stable (v3.22)
-RUN sed -i 's|http://dl-cdn.alpinelinux.org/alpine/edge/community|https://dl-cdn.alpinelinux.org/alpine/v3.22/community|g' /etc/apk/repositories
+# 2. Installation des dépendances pour compiler BlueALSA
+RUN apk add --no-cache --virtual .build-deps \
+    git \
+    make \
+    gcc \
+    musl-dev \
+    autoconf \
+    automake \
+    libtool \
+    pkgconf \
+    alsa-lib-dev \
+    dbus-dev \
+    glib-dev \
+    bluez-dev \
+    libbsd-dev \
+    sbc-dev
 
-# 2. Installer BlueALSA et ses utilitaires depuis le dépôt stable
-RUN apk update && apk add --no-cache \
-    bluealsa \
-    bluez-alsa-utils
+# 3. Compilation et installation de BlueALSA depuis les sources
+RUN cd /tmp && \
+    git clone https://github.com/Arkq/bluez-alsa.git && \
+    cd bluez-alsa && \
+    autoreconf --install && \
+    mkdir build && cd build && \
+    ../configure \
+        --prefix=/usr \
+        --sysconfdir=/etc \
+        --localstatedir=/var \
+        --disable-hcitop \
+        --disable-aac \
+        --disable-ofono \
+        --disable-debug && \
+    make && \
+    make install
 
-# Dépendances Python pour l'API web
+# 4. Nettoyage des outils de compilation
+RUN apk del .build-deps && \
+    rm -rf /tmp/bluez-alsa
+
+# 5. Dépendances Python pour l'API web
 RUN apk add --no-cache \
     py3-flask \
     py3-flask-cors
 
-# Copie des fichiers
+# Copie des fichiers de l'add-on
 COPY run.sh /
 COPY api /api/
 COPY www /www/
