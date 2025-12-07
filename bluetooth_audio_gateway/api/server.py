@@ -397,9 +397,10 @@ def play_test_sound():
         if _which('bluealsa-aplay') and address:
             try:
                 with open(tmp_path, 'rb') as wav_file:
-                    result = subprocess.run(['bluealsa-aplay', '-v', address], 
-                                          stdin=wav_file,
-                                          capture_output=True, text=True, timeout=5)
+                    # Ajouter --socket pour pointer vers le socket BlueALSA
+                    result = subprocess.run(['bluealsa-aplay', '--socket', '/tmp/bluealsa/socket', address], 
+                                        stdin=wav_file,
+                                        capture_output=True, text=True, timeout=5)
                 ok = result.returncode == 0
                 out = (result.stdout + '\n' + result.stderr).strip()
                 app.logger.info(f"bluealsa-aplay with stdin: ok={ok} output={out[:500]}")

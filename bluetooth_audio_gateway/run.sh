@@ -37,43 +37,57 @@ if [ -n "${DEVICE_ADDRESS}" ]; then
     fi
 fi
 
-# Démarrer BlueALSA daemon (nécessaire pour la lecture audio Bluetooth)
+# ========== SECTION CRITIQUE : DÉMARRAGE DE BLUEALSA ==========
 bashio::log.info "Démarrage du daemon BlueALSA..."
 
-# Arrêter tout processus bluealsa existant pour un démarrage propre
+# Arrêter proprement tout processus bluealsa existant
 pkill -9 bluealsa 2>/dev/null || true
 sleep 2
 
-# Démarrer bluealsa avec les paramètres optimisés pour Home Assistant OS
-# L'option -p a2dp-sink permet le profil audio A2DP (haute qualité)
-bluealsa -p a2dp-sink -i hci0 &
+# Créer le répertoire pour BlueALSA avec les bonnes permissions
+mkdir -p /var/run/bluealsa
+chown -R root:audio /var/run/bluealsa 2>/dev/null || true
+chmod 775 /var/run/bluealsa
+
+# Créer aussi le répertoire alternatif
+mkdir -p /tmp/bluealsa
+chmod 777 /tmp/bluealsa
+
+# Démarrer bluealsa avec D-Bus désactivé et socket explicite
+# L'option --disable-dbus résout l'erreur "Couldn't acquire D-Bus name"
+# L'option -S spécifie le socket pour éviter les problèmes de permissions
+bluealsa --disable-dbus -p a2dp-sink -i hci0 -S /tmp/bluealsa/socket &
 BLUEALSA_PID=$!
-sleep 3
+sleep 5
 
 # Vérification robuste du démarrage
-if ps -p $BLUEALSA_PID > /dev/null 2>&1; then
+if kill -0 $BLUEALSA_PID 2>/dev/null; then
     bashio::log.info "✅ BlueALSA daemon actif (PID: $BLUEALSA_PID)"
     
-    # Vérifier que le socket BlueALSA est créé
-    if [ -S "/var/run/bluealsa/hci0" ] || [ -S "/tmp/bluealsa.socket" ]; then
-        bashio::log.info "✅ Socket BlueALSA détecté"
+    # Vérifier que le socket est créé
+    if [ -S "/tmp/bluealsa/socket" ]; then
+        bashio::log.info "✅ Socket BlueALSA détecté: /tmp/bluealsa/socket"
+        # Tester avec bluealsa-aplay
+        if command -v bluealsa-aplay &> /dev/null; then
+            bashio::log.info "Test bluealsa-aplay..."
+            timeout 3 bluealsa-aplay -L 2>&1 | head -5
+        fi
     else
-        bashio::log.warning "⚠️  Socket BlueALSA non trouvé. Essai avec spécification manuelle..."
-        # Redémarrer avec socket explicite
+        bashio::log.warning "⚠️  Socket BlueALSA non trouvé. Essai sans option -S..."
         pkill -9 bluealsa 2>/dev/null || true
-        bluealsa -p a2dp-sink -i hci0 -S /tmp/bluealsa.socket &
+        bluealsa --disable-dbus -p a2dp-sink -i hci0 &
         sleep 3
     fi
 else
     bashio::log.error "❌ BlueALSA daemon n'a pas pu démarrer"
-    bashio::log.warning "Tentative avec debug activé..."
-    bluealsa -p a2dp-sink -i hci0 -v &
+    # Essayer avec debug (option correcte)
+    bashio::log.info "Tentative avec debug..."
+    bluealsa --disable-dbus -p a2dp-sink -i hci0 --verbose &
     sleep 5
 fi
 
-# Vérifier les processus audio
-bashio::log.info "Processus audio en cours d'exécution :"
-ps aux | grep -E "(bluealsa|bluez|pulse)" | grep -v grep || true
+# Vérifier les processus
+ps aux | grep -E "bluealsa|bluez" | grep -v grep || true
 
 # Démarrer le serveur API Python
 bashio::log.info "Démarrage du serveur API Flask..."
