@@ -24,6 +24,44 @@ def serve_static(filename):
     return send_from_directory('/www', filename)
 
 # ========== FONCTIONS UTILITAIRES ==========
+def _find_pulse_sink_for_address(device_address):
+    """Tente de trouver l'ID d'un sink PulseAudio correspondant à une adresse MAC Bluetooth."""
+    try:
+        # Lister tous les sinks et filtrer par propriété 'device.api' ou nom
+        ok, out = _run_cmd(['pactl', 'list', 'short', 'sinks'])
+        if not ok:
+            return None
+        for line in out.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 2:
+                sink_name = parts[1]
+                # Le nom du sink contient souvent l'adresse MAC (format varié)
+                # Ex: bluez_output.XX_XX_XX_XX_XX_XX.a2dp-sink
+                if device_address.replace(':', '_').lower() in sink_name.lower():
+                    return sink_name
+        app.logger.info(f"Aucun sink PulseAudio trouvé pour l'adresse {device_address}")
+    except Exception as e:
+        app.logger.warning(f"Erreur lors de la recherche du sink: {e}")
+    return None
+
+def _log_audio_diagnostic():
+    """Log des informations de diagnostic audio pour le débogage."""
+    try:
+        app.logger.info("--- DIAGNOSTIC AUDIO PIPEWIRE ---")
+        # État de PipeWire
+        ok, out = _run_cmd(['pactl', 'info'], timeout=3)
+        app.logger.info(f"PulseAudio Server Info: {out[:300]}")
+        # Liste des sinks
+        ok, out = _run_cmd(['pactl', 'list', 'short', 'sinks'], timeout=3)
+        app.logger.info(f"Sinks disponibles: {out[:500]}")
+        # Vérifier si le module Bluetooth est chargé
+        ok, out = _run_cmd(['pactl', 'list', 'short', 'modules'], timeout=3)
+        if 'module-bluez5-device' in out:
+            app.logger.info("Module Bluetooth PipeWire chargé.")
+    except Exception as e:
+        app.logger.error(f"Erreur durant le diagnostic: {e}")
+
+        
 def get_device_details(mac_address):
     """Récupère les informations détaillées d'un appareil Bluetooth."""
     try:
@@ -375,16 +413,13 @@ def connect_ble_device():
 
 @app.route('/api/play_test_sound', methods=['POST'])
 def play_test_sound():
-    """Joue un petit son de test sur l'appareil Bluetooth indiqué.
-
-    Le corps JSON peut contenir `address` (MAC). Si absent, on tente de jouer
-    sur la sortie audio par défaut.
-    """
+    """Joue un petit son de test sur l'appareil Bluetooth via PipeWire."""
     try:
         data = request.get_json() or {}
         address = data.get('address')
+        app.logger.info(f"Lecture du son de test via PipeWire pour l'appareil: {address}")
 
-        # Générer un WAV temporaire
+        # 1. Générer le fichier WAV de test (fonction existante inchangée)
         tmpf = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
         tmp_path = tmpf.name
         tmpf.close()
@@ -392,97 +427,52 @@ def play_test_sound():
 
         app.logger.info(f"Fichier de test généré: {tmp_path}")
 
-        # 1) Tentative via bluealsa-aplay (si présent et adresse fournie)
-        #    Pipe le WAV directement à bluealsa-aplay
-        if _which('bluealsa-aplay') and address:
-            try:
-                with open(tmp_path, 'rb') as wav_file:
-                    # Ajouter --socket pour pointer vers le socket BlueALSA
-                    result = subprocess.run(['bluealsa-aplay', '--socket', '/tmp/bluealsa/socket', address], 
-                                        stdin=wav_file,
-                                        capture_output=True, text=True, timeout=5)
-                ok = result.returncode == 0
-                out = (result.stdout + '\n' + result.stderr).strip()
-                app.logger.info(f"bluealsa-aplay with stdin: ok={ok} output={out[:500]}")
-                if ok:
-                    os.unlink(tmp_path)
-                    return jsonify({'success': True, 'method': 'bluealsa-aplay (stdin)', 'details': out})
-                else:
-                    app.logger.warning(f"bluealsa-aplay failed: {out[:200]}")
-            except subprocess.TimeoutExpired:
-                app.logger.warning(f"bluealsa-aplay timed out (daemon may not be running or device unreachable)")
-            except Exception as e:
-                app.logger.warning(f"bluealsa-aplay exception: {e}")
+        # 2. STRATÉGIE PRINCIPALE : Utiliser paplay avec PipeWire-Pulse
+        #    C'est la méthode la plus fiable avec PipeWire.
+        if _which('paplay'):
+            app.logger.info("Tentative avec paplay (PipeWire-Pulse)...")
+            # Construire la commande. Si une adresse est fournie, on peut tenter de cibler le sink.
+            cmd = ['paplay', tmp_path]
+            if address:
+                # Optionnel : Trouver l'ID du sink PulseAudio pour cette adresse Bluetooth
+                # Cela peut rendre la lecture plus robuste.
+                sink_id = _find_pulse_sink_for_address(address)
+                if sink_id:
+                    cmd = ['paplay', '--device=' + sink_id, tmp_path]
+                    app.logger.info(f"Ciblage du sink PulseAudio: {sink_id}")
+            
+            ok, out = _run_cmd(cmd, timeout=10)
+            app.logger.info(f"paplay result: ok={ok}, output={out[:200]}")
+            if ok:
+                os.unlink(tmp_path)
+                return jsonify({'success': True, 'method': 'pipewire-pulse (paplay)'})
 
-        # 2) Tentative directe aplay sur sortie par défaut (peut échouer sans carte audio)
+        # 3. FALLBACK : Utiliser aplay (via l'interface ALSA de PipeWire)
         if _which('aplay'):
-            ok, out = _run_cmd(['aplay', tmp_path])
-            app.logger.info(f"aplay direct: ok={ok} output={out[:500]}")
+            app.logger.info("Tentative avec aplay (PipeWire-ALSA)...")
+            # PipeWire crée généralement un périphérique ALSA nommé 'pipewire'
+            ok, out = _run_cmd(['aplay', '-D', 'pipewire', tmp_path], timeout=10)
             if ok:
                 os.unlink(tmp_path)
-                return jsonify({'success': True, 'method': 'aplay', 'details': out})
-            else:
-                app.logger.warning(f"aplay failed with output: {out}")
-                # Essayer avec -D default pour être explicite
-                ok2, out2 = _run_cmd(['aplay', '-D', 'default', tmp_path])
-                app.logger.info(f"aplay with -D default: ok={ok2} output={out2[:500]}")
-                if ok2:
-                    os.unlink(tmp_path)
-                    return jsonify({'success': True, 'method': 'aplay (-D default)', 'details': out2})
-
-        # 3) Tentative via PulseAudio (pactl -> paplay/aplay)
-        if _which('pactl'):
-            ok, sinks_out = _run_cmd(['pactl', 'list', 'sinks', 'short'])
-            app.logger.info(f"pactl sinks: {sinks_out[:400]}")
-
-            sink_name = None
-            if address and sinks_out:
-                variants = [address, address.replace(':', '_'), address.replace(':', '')]
-                for line in sinks_out.splitlines():
-                    for v in variants:
-                        if v.lower() in line.lower():
-                            parts = line.split('\t')
-                            if len(parts) >= 2:
-                                sink_name = parts[1].strip()
-                                break
-                    if sink_name:
-                        break
-
-            # Si on a trouvé un sink correspondant, le définir et jouer
-            if sink_name:
-                set_ok, set_out = _run_cmd(['pactl', 'set-default-sink', sink_name])
-                app.logger.info(f"Set default sink {sink_name}: {set_out}")
-                if _which('paplay'):
-                    ok, out = _run_cmd(['paplay', tmp_path])
-                    app.logger.info(f"paplay: ok={ok}")
-                    if ok:
-                        os.unlink(tmp_path)
-                        return jsonify({'success': True, 'method': 'pulse+paplay', 'sink': sink_name})
-                # fallback to aplay
-                if _which('aplay'):
-                    ok, out = _run_cmd(['aplay', tmp_path])
-                    if ok:
-                        os.unlink(tmp_path)
-                        return jsonify({'success': True, 'method': 'pulse+aplay', 'sink': sink_name})
-
-        # 4) ffplay fallback
-        if _which('ffplay'):
-            ok, out = _run_cmd(['ffplay', '-nodisp', '-autoexit', tmp_path])
-            app.logger.info(f"ffplay fallback: ok={ok}")
+                return jsonify({'success': True, 'method': 'pipewire-alsa (aplay)'})
+            # Essai avec le périphérique par défaut, au cas où
+            ok, out = _run_cmd(['aplay', tmp_path], timeout=10)
             if ok:
                 os.unlink(tmp_path)
-                return jsonify({'success': True, 'method': 'ffplay', 'details': out})
+                return jsonify({'success': True, 'method': 'alsa-default (aplay)'})
 
-        # Nettoyage et erreur si aucun moyen
+        # 4. NETTOYAGE & ÉCHEC
         try:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
         except Exception:
             pass
 
-        error_msg = 'Aucun lecteur audio n\'a fonctionné. Vérifiez que aplay est installé et qu\'une carte audio est configurée dans le conteneur.'
-        app.logger.error(f"Toutes les tentatives de lecture ont échoué.")
-        return jsonify({'success': False, 'error': error_msg, 'tools_available': {'aplay': _which('aplay'), 'paplay': _which('paplay'), 'ffplay': _which('ffplay'), 'bluealsa-aplay': _which('bluealsa-aplay')}}), 500
+        error_msg = "Aucune méthode de lecture audio n'a fonctionné avec PipeWire."
+        app.logger.error(error_msg)
+        # Diagnostic : Vérifier l'état de PipeWire/PulseAudio
+        _log_audio_diagnostic()
+        return jsonify({'success': False, 'error': error_msg}), 500
 
     except Exception as e:
         app.logger.error(f"Erreur play_test_sound: {e}")

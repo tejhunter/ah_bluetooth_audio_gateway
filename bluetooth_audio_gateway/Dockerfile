@@ -12,24 +12,25 @@ RUN apk add --no-cache \
     bluez \
     bluez-deprecated \
     bluez-libs \
-    bluez-alsa \
     dbus \
     python3 \
     py3-pip \
-    py3-dbus \           
-    py3-gobject3 \       
+    py3-dbus \
+    py3-gobject3 \
     alsa-utils \
-    pulseaudio \
-    pulseaudio-bluez \
-    pulseaudio-utils \
+    pipewire \
+    pipewire-pulse \
+    pipewire-alsa \
+    wireplumber \
+    libspa-0.2-bluetooth \
     ffmpeg \
     curl \
     bash \
     git \
     gcc \
     musl-dev \
-    python3-dev \        
-    linux-headers        
+    python3-dev \
+    linux-headers     
 
 # Installation des dépendances Python pour l'API web VIA APK (et non pip)
 RUN apk add --no-cache \
