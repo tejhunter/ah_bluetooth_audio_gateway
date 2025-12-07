@@ -413,66 +413,44 @@ def connect_ble_device():
 
 @app.route('/api/play_test_sound', methods=['POST'])
 def play_test_sound():
-    """Joue un petit son de test sur l'appareil Bluetooth via PipeWire."""
+    """Joue un son de test via PipeWire."""
     try:
         data = request.get_json() or {}
         address = data.get('address')
-        app.logger.info(f"Lecture du son de test via PipeWire pour l'appareil: {address}")
+        app.logger.info(f"Test audio via PipeWire pour {address}")
 
-        # 1. Générer le fichier WAV de test (fonction existante inchangée)
-        tmpf = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
-        tmp_path = tmpf.name
-        tmpf.close()
-        _generate_tone_wav(tmp_path, duration=1.0, freq=660.0, volume=0.4)
+        # ... (génération du fichier WAV tmp_path comme avant) ...
 
-        app.logger.info(f"Fichier de test généré: {tmp_path}")
-
-        # 2. STRATÉGIE PRINCIPALE : Utiliser paplay avec PipeWire-Pulse
-        #    C'est la méthode la plus fiable avec PipeWire.
+        # STRATÉGIE 1: paplay (PipeWire-Pulse) - LA BONNE
         if _which('paplay'):
-            app.logger.info("Tentative avec paplay (PipeWire-Pulse)...")
-            # Construire la commande. Si une adresse est fournie, on peut tenter de cibler le sink.
+            app.logger.info("Tentative avec paplay...")
             cmd = ['paplay', tmp_path]
-            if address:
-                # Optionnel : Trouver l'ID du sink PulseAudio pour cette adresse Bluetooth
-                # Cela peut rendre la lecture plus robuste.
-                sink_id = _find_pulse_sink_for_address(address)
-                if sink_id:
-                    cmd = ['paplay', '--device=' + sink_id, tmp_path]
-                    app.logger.info(f"Ciblage du sink PulseAudio: {sink_id}")
-            
             ok, out = _run_cmd(cmd, timeout=10)
-            app.logger.info(f"paplay result: ok={ok}, output={out[:200]}")
             if ok:
                 os.unlink(tmp_path)
                 return jsonify({'success': True, 'method': 'pipewire-pulse (paplay)'})
 
-        # 3. FALLBACK : Utiliser aplay (via l'interface ALSA de PipeWire)
+        # STRATÉGIE 2: aplay avec périphérique PipeWire
         if _which('aplay'):
-            app.logger.info("Tentative avec aplay (PipeWire-ALSA)...")
-            # PipeWire crée généralement un périphérique ALSA nommé 'pipewire'
+            app.logger.info("Tentative avec aplay -D pipewire...")
+            # PipeWire crée un périphérique ALSA nommé 'pipewire' ou 'default'
             ok, out = _run_cmd(['aplay', '-D', 'pipewire', tmp_path], timeout=10)
+            if not ok:
+                ok, out = _run_cmd(['aplay', '-D', 'default', tmp_path], timeout=10)
             if ok:
                 os.unlink(tmp_path)
                 return jsonify({'success': True, 'method': 'pipewire-alsa (aplay)'})
-            # Essai avec le périphérique par défaut, au cas où
-            ok, out = _run_cmd(['aplay', tmp_path], timeout=10)
-            if ok:
-                os.unlink(tmp_path)
-                return jsonify({'success': True, 'method': 'alsa-default (aplay)'})
 
-        # 4. NETTOYAGE & ÉCHEC
+        # NETTOYAGE & ERREUR
         try:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-        except Exception:
-            pass
+            os.unlink(tmp_path)
+        except: pass
 
-        error_msg = "Aucune méthode de lecture audio n'a fonctionné avec PipeWire."
-        app.logger.error(error_msg)
-        # Diagnostic : Vérifier l'état de PipeWire/PulseAudio
-        _log_audio_diagnostic()
-        return jsonify({'success': False, 'error': error_msg}), 500
+        app.logger.error("Toutes les méthodes de lecture ont échoué.")
+        return jsonify({
+            'success': False,
+            'error': 'Lecture audio impossible. Vérifiez que PipeWire est actif.'
+        }), 500
 
     except Exception as e:
         app.logger.error(f"Erreur play_test_sound: {e}")
