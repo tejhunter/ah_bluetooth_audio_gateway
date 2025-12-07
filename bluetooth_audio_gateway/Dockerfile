@@ -12,7 +12,7 @@ RUN apk add --no-cache \
     bluez \
     bluez-deprecated \
     bluez-libs \
-    bluez-alsa-utils \
+    bluez-alsa \
     dbus \
     python3 \
     py3-pip \
