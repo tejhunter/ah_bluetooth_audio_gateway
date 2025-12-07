@@ -37,19 +37,22 @@
             if (data.success && data.devices.length > 0) {
                 container.innerHTML = '<h3>Appareils trouvés :</h3>';
                 data.devices.forEach(device => {
-                    const div = document.createElement('div');
-                    div.className = 'device';
-                    // Icône et état visuel
                     const statusIcon = device.connected ? '🟢' : '⚪';
                     const statusText = device.connected ? 'Connecté' : 'Déconnecté';
+
+                    // BOUTONS CONDITIONNELS
+                    let actionButton = '';
+                    if (device.connected) {
+                        actionButton = `<button onclick="disconnectDevice('${device.address}')" style="background-color: #ff4444; color: white;">Déconnecter</button>`;
+                    } else {
+                        actionButton = `<button onclick="connectDevice('${device.address}')">Connecter</button>`;
+                    }
+
                     div.innerHTML = `
                         <strong>${device.name}</strong><br>
                         <small>${device.address} • ${statusIcon} ${statusText} • ${device.icon}</small><br>
-                        <button onclick="connectDevice('${device.address}')" ${device.connected ? 'disabled' : ''}>
-                            ${device.connected ? 'Déjà connecté' : 'Connecter'}
-                        </button>
+                        ${actionButton}
                     `;
-                    container.appendChild(div);
                 });
             }
         }
@@ -62,6 +65,23 @@
             });
             const result = await response.json();
             alert(result.success ? 'Connexion réussie !' : 'Erreur : ' + result.error);
+        }
+
+        async function disconnectDevice(address) {
+            if (!confirm(`Voulez-vous vraiment déconnecter cet appareil ?`)) return;
+
+            const response = await fetch('/api/disconnect', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ address: address })
+            });
+            const result = await response.json();
+            if (result.success) {
+                alert('Appareil déconnecté.');
+                scanDevices(); // Recharger la liste
+            } else {
+                alert('Erreur : ' + result.error);
+            }
         }
     </script>
 </body>

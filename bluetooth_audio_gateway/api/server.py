@@ -135,6 +135,43 @@ def connect_device():
         app.logger.error(f"Erreur inattendue: {str(e)}")
         return jsonify({'success': False, 'error': f'Erreur interne du serveur: {str(e)}'}), 500
 
+
+@app.route('/api/disconnect', methods=['POST'])
+def disconnect_device():
+    """Déconnecter un appareil Bluetooth."""
+    try:
+        data = request.get_json()
+        address = data.get('address')
+        app.logger.info(f"Tentative de déconnexion de l'appareil: {address}")
+
+        if not address:
+            return jsonify({'success': False, 'error': 'Adresse MAC requise'}), 400
+
+        # Commande de déconnexion
+        disconnect_cmd = f"echo -e 'disconnect {address}\\n' | bluetoothctl"
+        result = subprocess.run(disconnect_cmd, shell=True, capture_output=True, text=True, timeout=10)
+
+        time.sleep(2)  # Attendre que l'état se mette à jour
+
+        # Vérifier que l'appareil est bien déconnecté
+        info_cmd = f"echo 'info {address}' | bluetoothctl"
+        info_result = subprocess.run(info_cmd, shell=True, capture_output=True, text=True, timeout=5)
+
+        if 'Connected: no' in info_result.stdout:
+            app.logger.info(f"SUCCÈS : Appareil {address} est déconnecté.")
+            return jsonify({'success': True, 'message': f'Appareil {address} déconnecté.'})
+        else:
+            app.logger.warning(f"ÉCHEC : Impossible de déconnecter {address}.")
+            return jsonify({'success': False, 'error': 'Échec de la déconnexion.'}), 500
+
+    except subprocess.TimeoutExpired:
+        app.logger.error("Timeout lors de la déconnexion")
+        return jsonify({'success': False, 'error': 'Timeout.'}), 500
+    except Exception as e:
+        app.logger.error(f"Erreur inattendue: {str(e)}")
+        return jsonify({'success': False, 'error': f'Erreur interne: {str(e)}'}), 500
+    
+    
 if __name__ == '__main__':
     # DÉMARRAGE DU SERVEUR - host='0.0.0.0' est essentiel
     app.run(host='0.0.0.0', port=3000, debug=False, threaded=True)
