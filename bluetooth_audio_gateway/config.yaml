@@ -1,5 +1,5 @@
 name: "Bluetooth Audio Gateway"
-version: "0.1.0"
+version: "0.1.4"
 slug: "bluetooth_audio_gateway"
 description: "Passe-relais audio Bluetooth pour connecter des enceintes et micros à Home Assistant."
 arch:
